@@ -114,37 +114,68 @@ def find_shortest_path(source_domain):
     return [source_domain, "谱域"], 1
 
 # ═══════════════════════════════════════════
-# 自主推理引擎
+# 自主推理引擎（修复版）
 # ═══════════════════════════════════════════
 def analyze_term(expr, var='n'):
+    """
+    分析通项表达式的渐近行为
+    返回: (发散类型, 参数, 域, 映射路径, 步数, 计算方法, 方法参数)
+    """
+    x = Symbol(var)
     expr_s = sp.simplify(expr)
-    if expr_s.is_polynomial(var):
-        deg = sp.degree(expr_s, gen=var)
+    
+    # ── 多项式 n^k ──
+    try:
+        poly = sp.expand(expr_s)
+        deg = sp.degree(poly, x)
         if deg >= 0:
             return ('polynomial', deg, '加法域',
                     '加法域 → 指数映射 → 乘法域 → 梅林变换 → 谱域', 2, 'zeta', -deg)
-    atoms = expr_s.atoms()
-    for a in atoms:
-        if a.is_Pow and a.exp == Symbol(var):
-            base = a.base
-            if base.is_Integer and base > 1:
-                return ('geometric', int(base), '乘法域',
-                        '乘法域 → 泛函积分域（阿贝尔求和）', 1, 'abel', int(base))
+    except:
+        pass
+    
+    # ── 几何级数 r^n ──
+    if isinstance(expr_s, sp.Pow) and expr_s.exp == x:
+        base = expr_s.base
+        try:
+            if base.is_Integer:
+                if base > 1:
+                    return ('geometric', int(base), '乘法域',
+                            '乘法域 → 泛函积分域（阿贝尔求和）', 1, 'abel', int(base))
+                if base < -1:
+                    return ('osc_geometric', int(base), '乘法域',
+                            '乘法域 → 泛函积分域（欧拉求和）', 1, 'euler', int(base))
+        except:
+            pass
+    
+    # ── 阶乘 n! ──
     if expr_s.has(sp.factorial):
         return ('factorial', None, '乘法域',
                 '乘法域 → 泛函积分域（波雷尔求和）', 1, 'borel', None)
-    if expr_s == 1/Symbol(var):
+    
+    # ── 调和 1/n ──
+    if isinstance(expr_s, sp.Pow) and expr_s == 1/x:
         return ('harmonic', None, '加法域',
                 '加法域 → 梅林变换 → 谱域', 1, 'zeta', 1)
-    if expr_s == sp.log(Symbol(var)):
+    
+    # ── 对数 ln n ──
+    if isinstance(expr_s, sp.log) and expr_s.args[0] == x:
         return ('logarithmic', None, '加法域',
                 '加法域 → 梅林变换 → 谱域', 1, 'zeta_deriv', 0)
-    fn = str(expr_s.func) if hasattr(expr_s, 'func') else ''
-    if 'mobius' in fn.lower(): return ('mobius', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'mobius', None)
-    if 'liouville' in fn.lower(): return ('liouville', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'liouville', None)
-    if 'eulerphi' in fn.lower(): return ('euler_phi', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'euler_phi', None)
-    if 'divisor' in fn.lower(): return ('divisor', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'divisor', None)
-    if 'fibonacci' in fn.lower(): return ('fibonacci', None, '乘法域', '乘法域 → 泛函积分域', 1, 'fibonacci', None)
+    
+    # ── 数论函数（按名称匹配）──
+    fn = str(expr_s).lower()
+    if 'mobius' in fn: 
+        return ('mobius', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'mobius', None)
+    if 'liouville' in fn: 
+        return ('liouville', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'liouville', None)
+    if 'eulerphi' in fn or 'totient' in fn: 
+        return ('euler_phi', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'euler_phi', None)
+    if 'divisor' in fn or 'sigma' in fn: 
+        return ('divisor', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'divisor', None)
+    if 'fibonacci' in fn: 
+        return ('fibonacci', None, '乘法域', '乘法域 → 泛函积分域', 1, 'fibonacci', None)
+    
     return ('unknown', None, '未知', '无映射', 0, None, None)
 
 def compute_spectral(method, param):
@@ -167,6 +198,21 @@ def compute(user_input):
     if not HAS_SYMPY:
         return {"status": "error", "message": "SymPy未安装，请联系管理员。"}
     s = user_input.strip()
+    
+    # 自然语言回退
+    natural_map = {
+        "1+2+3+...": "Sum(n, (n, 1, oo))",
+        "1+4+9+16+...": "Sum(n**2, (n, 1, oo))",
+        "1+8+27+64+...": "Sum(n**3, (n, 1, oo))",
+        "1+2+4+8+...": "Sum(2**n, (n, 0, oo))",
+        "1+3+9+27+...": "Sum(3**n, (n, 0, oo))",
+        "1-1+1-1+...": "Sum((-1)**n, (n, 0, oo))",
+        "1-2+4-8+...": "Sum((-2)**n, (n, 0, oo))",
+        "1+1+2+6+24+...": "Sum(factorial(n), (n, 0, oo))",
+    }
+    if s in natural_map:
+        s = natural_map[s]
+    
     try:
         expr_str = s.replace('∑', 'Sum').replace('∞', 'oo').replace(' ', '')
         n = Symbol('n')
@@ -176,16 +222,15 @@ def compute(user_input):
         if isinstance(expr, Sum):
             summand = expr.args[0]
             var_tuple = expr.args[1]
-            var_name = str(var_tuple[0])
             upper = var_tuple[2]
             if upper != oo:
                 return {"status": "finite", "message": f"该级数上限为{str(upper)}，可直接计算。", "summand": str(summand)}
         else:
             return {"status": "error", "message": "无法识别为无穷级数。"}
-        asym_type, param, domain, mapping, steps, method, method_param = analyze_term(summand, var_name)
+        asym_type, param, domain, mapping, steps, method, method_param = analyze_term(summand)
         if asym_type == 'unknown':
             return {"status": "unknown", "input": s, "summand": str(summand),
-                    "message": "无法识别通项的类型。请尝试已知数论函数名。"}
+                    "message": f"无法识别通项的类型。通项为: {str(summand)}"}
         value = compute_spectral(method, method_param)
         return {"input": s, "summand": str(summand), "domain": domain,
                 "divergence": asym_type, "mapping_path": mapping, "steps": steps,
@@ -236,24 +281,6 @@ def visualize_mapping(source_domain, mapping_path, save_path="static/graph.png")
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     return save_path
-
-# ═══════════════════════════════════════════
-# 辅助函数
-# ═══════════════════════════════════════════
-def format_value(value):
-    if value is None: return "未知"
-    if isinstance(value, float) and value == float('inf'): return "∞"
-    if isinstance(value, float) and abs(value) < 1e-10: return "0"
-    if isinstance(value, float):
-        frac_map = {-1/12:"-1/12", 0.5:"1/2", -1:"-1", 1/3:"1/3", 0.25:"1/4",
-                    1/120:"1/120", -0.5:"-1/2", -0.125:"-1/8", -1/24:"-1/24",
-                    -1/252:"-1/252", 1/252:"1/252", -5/6:"-5/6", 1/144:"1/144"}
-        for num, frac_str in frac_map.items():
-            if abs(value-num) < 1e-10: return f"{value} = {frac_str}"
-        phi = (math.sqrt(5)+1)/2
-        if abs(value-phi) < 1e-10: return f"{value} = φ（黄金比例）"
-        return f"{value:.6f}"
-    return str(value)
 
 # ═══════════════════════════════════════════
 # Flask 应用
