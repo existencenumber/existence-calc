@@ -245,9 +245,9 @@ def format_value(value):
     if isinstance(value, float) and value == float('inf'): return "∞"
     if isinstance(value, float) and abs(value) < 1e-10: return "0"
     if isinstance(value, float):
-        frac_map = {-1/12:"-1/12", 0.5:"1/2", -1:"-1", 1/3:"1/3", 0.25:"1/4",
-                    1/120:"1/120", -0.5:"-1/2", -0.125:"-1/8", -1/24:"-1/24",
-                    -1/252:"-1/252", 1/252:"1/252", -5/6:"-5/6", 1/144:"1/144"}
+        const fracMap = {'-1/12':'-1/12', '0.5':'1/2', '-1':'-1', '1/3':'1/3', '0.25':'1/4',
+                 '1/120':'1/120', '-0.5':'-1/2', '-0.125':'-1/8', '-1/24':'-1/24',
+                 '-1/252':'-1/252', '1/252':'1/252', '-5/6':'-5/6', '1/144':'1/144'};
         for num, frac_str in frac_map.items():
             if abs(value-num) < 1e-10: return f"{value} = {frac_str}"
         phi = (math.sqrt(5)+1)/2
