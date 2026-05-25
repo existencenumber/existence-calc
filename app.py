@@ -104,31 +104,6 @@ def find_shortest_path(source_domain):
 def analyze_term(expr, var='n'):
     expr_s = sp.simplify(expr)
     
-    # --- 优先用更可靠的方法检查已知特殊函数 ---
-    
-    # 检查莫比乌斯函数
-    if expr_s.has(sp.functions.ntheory.mobius):
-        return ('mobius', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'mobius', None)
-        
-    # 检查刘维尔函数
-    fn = str(expr_s.func) if hasattr(expr_s, 'func') else ''
-    if 'liouville' in fn.lower():
-        return ('liouville', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'liouville', None)
-
-    # 检查欧拉函数
-    if expr_s.has(sp.functions.ntheory.totient):
-        return ('euler_phi', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'euler_phi', None)
-
-    # 检查除数函数
-    atoms = expr_s.atoms()
-    for a in atoms:
-        if a.func == sp.functions.ntheory.divisor_sigma:
-            return ('divisor', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'divisor', None)
-
-    # 检查斐波那契函数
-    if expr_s.has(sp.fibonacci):
-        return ('fibonacci', None, '乘法域', '乘法域 → 泛函积分域', 1, 'fibonacci', None)
-        
     # 多项式 n^k
     if expr_s.is_polynomial(var):
         deg = sp.degree(expr_s, gen=var)
