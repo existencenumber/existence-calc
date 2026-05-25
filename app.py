@@ -245,9 +245,9 @@ def format_value(value):
     if isinstance(value, float) and value == float('inf'): return "∞"
     if isinstance(value, float) and abs(value) < 1e-10: return "0"
     if isinstance(value, float):
-        const fracMap = {'-1/12':'-1/12', '0.5':'1/2', '-1':'-1', '1/3':'1/3', '0.25':'1/4',
-                 '1/120':'1/120', '-0.5':'-1/2', '-0.125':'-1/8', '-1/24':'-1/24',
-                 '-1/252':'-1/252', '1/252':'1/252', '-5/6':'-5/6', '1/144':'1/144'};
+        frac_map = {-1/12:"-1/12", 0.5:"1/2", -1:"-1", 1/3:"1/3", 0.25:"1/4",
+                    1/120:"1/120", -0.5:"-1/2", -0.125:"-1/8", -1/24:"-1/24",
+                    -1/252:"-1/252", 1/252:"1/252", -5/6:"-5/6", 1/144:"1/144"}
         for num, frac_str in frac_map.items():
             if abs(value-num) < 1e-10: return f"{value} = {frac_str}"
         phi = (math.sqrt(5)+1)/2
@@ -308,7 +308,7 @@ HTML_TEMPLATE = '''
 <body>
     <div class="container">
         <h1>🧌 塌缩怪兽 v9.0</h1>
-        <p class="subtitle">存在数论非微扰计算器 | 九域对偶映射 | e^{iS} = 1</p>
+        <p class="subtitle">存在数论非微扰计算器 | 九域对偶映射 | e<sup>iS</sup> = 1</p>
         <div class="examples">
             <span onclick="set('Sum(n**2, (n, 1, oo))')">∑ n²</span>
             <span onclick="set('Sum(n, (n, 1, oo))')">∑ n</span>
@@ -322,8 +322,8 @@ HTML_TEMPLATE = '''
         <div class="input-group">
             <input type="text" id="query" placeholder="输入发散级数，如 Sum(n**2, (n,1,oo)) 或 1+2+3+..."
                    value="Sum(n**2, (n, 1, oo))">
-            <button class="btn-calc" onclick="calculate()">坍缩!</button>
-            <button class="btn-viz" onclick="visualize()">可视化</button>
+            <button class="btn-calc" onclick="doCalc()">坍缩!</button>
+            <button class="btn-viz" onclick="doViz()">可视化</button>
         </div>
         <div class="loading" id="loading">⏳ 塌缩怪兽正在九域中搜索对偶映射...</div>
         <div class="result" id="result"></div>
@@ -331,80 +331,78 @@ HTML_TEMPLATE = '''
     </div>
     <script>
         function set(text) { document.getElementById('query').value = text; }
-        async function calculate() {
-            const query = document.getElementById('query').value;
-            const resultDiv = document.getElementById('result');
-            const loading = document.getElementById('loading');
-            const graphImg = document.getElementById('graph');
-            graphImg.classList.remove('show');
-            resultDiv.classList.remove('show');
-            loading.classList.add('show');
-            try {
-                const resp = await fetch('/api/calc', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({query: query})
-                });
-                const data = await resp.json();
-                loading.classList.remove('show');
-                if (data.status === 'success' || data.status === 'unknown') {
-                    resultDiv.innerHTML = buildResultHTML(data);
-                    resultDiv.classList.add('show');
-                } else {
-                    resultDiv.innerHTML = `<h3>错误</h3><p>${data.message || '未知错误'}</p>`;
-                    resultDiv.classList.add('show');
-                }
-            } catch (e) {
-                loading.classList.remove('show');
-                resultDiv.innerHTML = `<h3>错误</h3><p>网络错误: ${e.message}</p>`;
-                resultDiv.classList.add('show');
-            }
-        }
-        function buildResultHTML(data) {
-            let html = '<h3>📊 计算报告</h3>';
-            html += `<div class="result-row"><span class="result-label">输入</span><span class="result-value">${data.input || 'N/A'}</span></div>`;
-            html += `<div class="result-row"><span class="result-label">通项</span><span class="result-value">${data.summand || 'N/A'}</span></div>`;
-            html += `<div class="result-row"><span class="result-label">原始域</span><span class="result-value">${data.domain || 'N/A'}（${data.divergence || 'N/A'}）</span></div>`;
-            html += `<div class="result-row"><span class="result-label">映射路径</span><span class="result-value">${data.mapping_path || 'N/A'}</span></div>`;
-            html += `<div class="result-row"><span class="result-label">映射步数</span><span class="result-value">${data.steps || 'N/A'} 步（九域直径 ≤ 3）</span></div>`;
-            html += `<div class="result-highlight">坍缩值: ${formatValue(data.value)}</div>`;
-            html += `<p style="text-align:center;color:#aaa;margin-top:10px;">发散是表象，守恒是本质。e^{iS} = 1</p>`;
-            return html;
-        }
-        function formatValue(v) {
+        function fmt(v) {
             if (v === null || v === undefined) return '未知';
             if (v === Infinity || v === '∞') return '∞';
             if (Math.abs(v) < 1e-10) return '0';
-            const fracMap = {-1/12:'-1/12', 0.5:'1/2', -1:'-1', 1/3:'1/3', 0.25:'1/4',
-                             1/120:'1/120', -0.5:'-1/2', -0.125:'-1/8', -1/24:'-1/24',
-                             -1/252:'-1/252', 1/252:'1/252', -5/6:'-5/6', 1/144:'1/144'};
-            for (const [num, frac] of Object.entries(fracMap)) {
-                if (Math.abs(v - parseFloat(num)) < 1e-10) return `${v} = ${frac}`;
+            var fracMap = {};
+            fracMap[-1/12] = '-1/12'; fracMap[0.5] = '1/2'; fracMap[-1] = '-1';
+            fracMap[1/3] = '1/3'; fracMap[0.25] = '1/4'; fracMap[1/120] = '1/120';
+            fracMap[-0.5] = '-1/2'; fracMap[-0.125] = '-1/8'; fracMap[-1/24] = '-1/24';
+            fracMap[-1/252] = '-1/252'; fracMap[1/252] = '1/252'; fracMap[-5/6] = '-5/6';
+            fracMap[1/144] = '1/144';
+            for (var k in fracMap) {
+                if (Math.abs(v - parseFloat(k)) < 1e-10) return v + ' = ' + fracMap[k];
             }
-            const phi = (Math.sqrt(5)+1)/2;
-            if (Math.abs(v - phi) < 1e-10) return `${v} = φ`;
+            var phi = (Math.sqrt(5)+1)/2;
+            if (Math.abs(v - phi) < 1e-10) return v + ' = φ';
             return typeof v === 'number' ? v.toFixed(6) : String(v);
         }
-        async function visualize() {
-            const query = document.getElementById('query').value;
-            const graphImg = document.getElementById('graph');
-            const loading = document.getElementById('loading');
-            graphImg.classList.remove('show');
-            loading.classList.add('show');
+        function buildHTML(d) {
+            var h = '<h3>📊 计算报告</h3>';
+            h += '<div class="result-row"><span class="result-label">输入</span><span class="result-value">' + (d.input || 'N/A') + '</span></div>';
+            h += '<div class="result-row"><span class="result-label">通项</span><span class="result-value">' + (d.summand || 'N/A') + '</span></div>';
+            h += '<div class="result-row"><span class="result-label">原始域</span><span class="result-value">' + (d.domain || 'N/A') + '（' + (d.divergence || 'N/A') + '）</span></div>';
+            h += '<div class="result-row"><span class="result-label">映射路径</span><span class="result-value">' + (d.mapping_path || 'N/A') + '</span></div>';
+            h += '<div class="result-row"><span class="result-label">映射步数</span><span class="result-value">' + (d.steps || 'N/A') + ' 步（九域直径 ≤ 3）</span></div>';
+            h += '<div class="result-highlight">坍缩值: ' + fmt(d.value) + '</div>';
+            h += '<p style="text-align:center;color:#aaa;margin-top:10px;">发散是表象，守恒是本质。e^{iS} = 1</p>';
+            return h;
+        }
+        async function doCalc() {
+            var q = document.getElementById('query').value;
+            var r = document.getElementById('result');
+            var l = document.getElementById('loading');
+            var g = document.getElementById('graph');
+            g.classList.remove('show');
+            r.classList.remove('show');
+            l.classList.add('show');
             try {
-                const resp = await fetch('/api/viz', {
+                var resp = await fetch('/api/calc', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({query: query})
+                    body: JSON.stringify({query: q})
                 });
-                const data = await resp.json();
-                loading.classList.remove('show');
-                if (data.graph_url) {
-                    graphImg.src = data.graph_url;
-                    graphImg.classList.add('show');
+                var d = await resp.json();
+                l.classList.remove('show');
+                r.innerHTML = buildHTML(d);
+                r.classList.add('show');
+            } catch(e) {
+                l.classList.remove('show');
+                r.innerHTML = '<h3>错误</h3><p>网络错误: ' + e.message + '</p>';
+                r.classList.add('show');
+            }
+        }
+        async function doViz() {
+            var q = document.getElementById('query').value;
+            var g = document.getElementById('graph');
+            var l = document.getElementById('loading');
+            g.classList.remove('show');
+            l.classList.add('show');
+            try {
+                var resp = await fetch('/api/viz', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({query: q})
+                });
+                var d = await resp.json();
+                l.classList.remove('show');
+                if (d.graph_url) {
+                    g.src = d.graph_url;
+                    g.classList.add('show');
                 }
-            } catch (e) {
-                loading.classList.remove('show');
+            } catch(e) {
+                l.classList.remove('show');
                 alert('可视化失败: ' + e.message);
             }
         }
