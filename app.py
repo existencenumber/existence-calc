@@ -103,11 +103,40 @@ def find_shortest_path(source_domain):
 
 def analyze_term(expr, var='n'):
     expr_s = sp.simplify(expr)
+    
+    # --- 优先用更可靠的方法检查已知特殊函数 ---
+    
+    # 检查莫比乌斯函数
+    if expr_s.has(sp.functions.ntheory.mobius):
+        return ('mobius', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'mobius', None)
+        
+    # 检查刘维尔函数
+    fn = str(expr_s.func) if hasattr(expr_s, 'func') else ''
+    if 'liouville' in fn.lower():
+        return ('liouville', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'liouville', None)
+
+    # 检查欧拉函数
+    if expr_s.has(sp.functions.ntheory.totient):
+        return ('euler_phi', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'euler_phi', None)
+
+    # 检查除数函数
+    atoms = expr_s.atoms()
+    for a in atoms:
+        if a.func == sp.functions.ntheory.divisor_sigma:
+            return ('divisor', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'divisor', None)
+
+    # 检查斐波那契函数
+    if expr_s.has(sp.fibonacci):
+        return ('fibonacci', None, '乘法域', '乘法域 → 泛函积分域', 1, 'fibonacci', None)
+        
+    # 多项式 n^k
     if expr_s.is_polynomial(var):
         deg = sp.degree(expr_s, gen=var)
         if deg >= 0:
             return ('polynomial', deg, '加法域',
                     '加法域 → 指数映射 → 乘法域 → 梅林变换 → 谱域', 2, 'zeta', -deg)
+
+    # 几何 r^n
     atoms = expr_s.atoms()
     for a in atoms:
         if a.is_Pow and a.exp == Symbol(var):
@@ -115,21 +144,22 @@ def analyze_term(expr, var='n'):
             if base.is_Integer and base > 1:
                 return ('geometric', int(base), '乘法域',
                         '乘法域 → 泛函积分域（阿贝尔求和）', 1, 'abel', int(base))
+    
+    # 阶乘 n!
     if expr_s.has(sp.factorial):
         return ('factorial', None, '乘法域',
                 '乘法域 → 泛函积分域（波雷尔求和）', 1, 'borel', None)
+
+    # 调和 1/n
     if expr_s == 1/Symbol(var):
         return ('harmonic', None, '加法域',
                 '加法域 → 梅林变换 → 谱域', 1, 'zeta', 1)
+
+    # 对数 ln n
     if expr_s == sp.log(Symbol(var)):
         return ('logarithmic', None, '加法域',
                 '加法域 → 梅林变换 → 谱域', 1, 'zeta_deriv', 0)
-    fn = str(expr_s.func) if hasattr(expr_s, 'func') else ''
-    if 'mobius' in fn.lower(): return ('mobius', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'mobius', None)
-    if 'liouville' in fn.lower(): return ('liouville', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'liouville', None)
-    if 'eulerphi' in fn.lower(): return ('euler_phi', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'euler_phi', None)
-    if 'divisor' in fn.lower(): return ('divisor', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'divisor', None)
-    if 'fibonacci' in fn.lower(): return ('fibonacci', None, '乘法域', '乘法域 → 泛函积分域', 1, 'fibonacci', None)
+
     return ('unknown', None, '未知', '无映射', 0, None, None)
 
 def compute_spectral(method, param):
@@ -148,37 +178,10 @@ def compute_spectral(method, param):
         return methods[method](param) if param is not None else methods[method]()
     return None
 
-# 硬编码回退：对于经典级数，直接给出结果
-HARDCODED_SERIES = {
-    "Sum(n**2, (n, 1, oo))": {
-        "summand": "n**2", "domain": "加法域", "divergence": "二次发散",
-        "mapping_path": "加法域 → 指数映射 → 乘法域 → 梅林变换 → 谱域",
-        "steps": 2, "method": "zeta", "param": -2, "value": 0
-    },
-    "Sum(n, (n, 1, oo))": {
-        "summand": "n", "domain": "加法域", "divergence": "线性发散",
-        "mapping_path": "加法域 → 指数映射 → 乘法域 → 梅林变换 → 谱域",
-        "steps": 2, "method": "zeta", "param": -1, "value": -1/12
-    },
-    "Sum(2**n, (n, 0, oo))": {
-        "summand": "2**n", "domain": "乘法域", "divergence": "几何发散",
-        "mapping_path": "乘法域 → 泛函积分域（阿贝尔求和）",
-        "steps": 1, "method": "abel", "param": 2, "value": -1
-    },
-}
-
 def compute(user_input):
     if not HAS_SYMPY:
         return {"status": "error", "message": "SymPy未安装，请联系管理员。"}
     s = user_input.strip()
-    
-    # 先检查硬编码回退
-    if s in HARDCODED_SERIES:
-        d = HARDCODED_SERIES[s].copy()
-        d["input"] = s
-        d["status"] = "success"
-        return d
-    
     try:
         expr_str = s.replace('∑', 'Sum').replace('∞', 'oo').replace(' ', '')
         n = Symbol('n')
