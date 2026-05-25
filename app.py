@@ -6,7 +6,6 @@
 import re, math, os, json
 from collections import deque
 
-# ── 可选依赖 ──
 try:
     import sympy as sp
     from sympy import Sum, oo, factorial, log, Symbol, simplify
@@ -24,9 +23,6 @@ except ImportError:
 
 from flask import Flask, request, jsonify, render_template_string
 
-# ═══════════════════════════════════════════
-# 九域对偶图
-# ═══════════════════════════════════════════
 DUAL_GRAPH = {
     "加法域": {"指数映射": "乘法域", "黎曼和极限": "积分域", "差商极限": "微分域"},
     "乘法域": {"对数映射": "加法域", "对数导数": "积分域", "梅林变换": "谱域"},
@@ -51,9 +47,6 @@ DOMAIN_COLORS = {
     "编织域": "#98D8C8", "同伦域": "#F7DC6F", "范畴域": "#BB8FCE"
 }
 
-# ═══════════════════════════════════════════
-# 谱域计算函数
-# ═══════════════════════════════════════════
 def compute_zeta(s):
     zeta_vals = {0:-0.5, -1:-1/12, -2:0, -3:1/120, -4:-1/252, -5:1/252, -6:0, -7:-1/240, -8:0,
                  1:float('inf'), 2:math.pi**2/6, 3:1.2020569031595942}
@@ -61,9 +54,7 @@ def compute_zeta(s):
     if -8 <= s <= -1: return 0
     return None
 
-def compute_eta(s):
-    return {0:0.5, -1:0.25, -2:0, -3:-1/8, 1:math.log(2)}.get(s)
-
+def compute_eta(s): return {0:0.5, -1:0.25, -2:0, -3:-1/8, 1:math.log(2)}.get(s)
 def compute_abel(r): return 1/(1-r)
 def compute_euler(r): return 1/(1+abs(r))
 def compute_borel(): return 0.5963473623231941
@@ -94,9 +85,6 @@ def compute_prime_zeta(s):
 def compute_simplex(k):
     return compute_zeta(-k) if k >= 2 else compute_zeta(-1)
 
-# ═══════════════════════════════════════════
-# BFS域映射
-# ═══════════════════════════════════════════
 def find_shortest_path(source_domain):
     if source_domain in CONVERGENCE_DOMAINS:
         return [source_domain], 0
@@ -113,69 +101,35 @@ def find_shortest_path(source_domain):
                 queue.append((neighbor, new_path))
     return [source_domain, "谱域"], 1
 
-# ═══════════════════════════════════════════
-# 自主推理引擎（修复版）
-# ═══════════════════════════════════════════
 def analyze_term(expr, var='n'):
-    """
-    分析通项表达式的渐近行为
-    返回: (发散类型, 参数, 域, 映射路径, 步数, 计算方法, 方法参数)
-    """
-    x = Symbol(var)
     expr_s = sp.simplify(expr)
-    
-    # ── 多项式 n^k ──
-    try:
-        poly = sp.expand(expr_s)
-        deg = sp.degree(poly, x)
+    if expr_s.is_polynomial(var):
+        deg = sp.degree(expr_s, gen=var)
         if deg >= 0:
             return ('polynomial', deg, '加法域',
                     '加法域 → 指数映射 → 乘法域 → 梅林变换 → 谱域', 2, 'zeta', -deg)
-    except:
-        pass
-    
-    # ── 几何级数 r^n ──
-    if isinstance(expr_s, sp.Pow) and expr_s.exp == x:
-        base = expr_s.base
-        try:
-            if base.is_Integer:
-                if base > 1:
-                    return ('geometric', int(base), '乘法域',
-                            '乘法域 → 泛函积分域（阿贝尔求和）', 1, 'abel', int(base))
-                if base < -1:
-                    return ('osc_geometric', int(base), '乘法域',
-                            '乘法域 → 泛函积分域（欧拉求和）', 1, 'euler', int(base))
-        except:
-            pass
-    
-    # ── 阶乘 n! ──
+    atoms = expr_s.atoms()
+    for a in atoms:
+        if a.is_Pow and a.exp == Symbol(var):
+            base = a.base
+            if base.is_Integer and base > 1:
+                return ('geometric', int(base), '乘法域',
+                        '乘法域 → 泛函积分域（阿贝尔求和）', 1, 'abel', int(base))
     if expr_s.has(sp.factorial):
         return ('factorial', None, '乘法域',
                 '乘法域 → 泛函积分域（波雷尔求和）', 1, 'borel', None)
-    
-    # ── 调和 1/n ──
-    if isinstance(expr_s, sp.Pow) and expr_s == 1/x:
+    if expr_s == 1/Symbol(var):
         return ('harmonic', None, '加法域',
                 '加法域 → 梅林变换 → 谱域', 1, 'zeta', 1)
-    
-    # ── 对数 ln n ──
-    if isinstance(expr_s, sp.log) and expr_s.args[0] == x:
+    if expr_s == sp.log(Symbol(var)):
         return ('logarithmic', None, '加法域',
                 '加法域 → 梅林变换 → 谱域', 1, 'zeta_deriv', 0)
-    
-    # ── 数论函数（按名称匹配）──
-    fn = str(expr_s).lower()
-    if 'mobius' in fn: 
-        return ('mobius', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'mobius', None)
-    if 'liouville' in fn: 
-        return ('liouville', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'liouville', None)
-    if 'eulerphi' in fn or 'totient' in fn: 
-        return ('euler_phi', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'euler_phi', None)
-    if 'divisor' in fn or 'sigma' in fn: 
-        return ('divisor', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'divisor', None)
-    if 'fibonacci' in fn: 
-        return ('fibonacci', None, '乘法域', '乘法域 → 泛函积分域', 1, 'fibonacci', None)
-    
+    fn = str(expr_s.func) if hasattr(expr_s, 'func') else ''
+    if 'mobius' in fn.lower(): return ('mobius', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'mobius', None)
+    if 'liouville' in fn.lower(): return ('liouville', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'liouville', None)
+    if 'eulerphi' in fn.lower(): return ('euler_phi', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'euler_phi', None)
+    if 'divisor' in fn.lower(): return ('divisor', None, '加法域', '加法域 → 梅林变换 → 谱域', 1, 'divisor', None)
+    if 'fibonacci' in fn.lower(): return ('fibonacci', None, '乘法域', '乘法域 → 泛函积分域', 1, 'fibonacci', None)
     return ('unknown', None, '未知', '无映射', 0, None, None)
 
 def compute_spectral(method, param):
@@ -198,21 +152,6 @@ def compute(user_input):
     if not HAS_SYMPY:
         return {"status": "error", "message": "SymPy未安装，请联系管理员。"}
     s = user_input.strip()
-    
-    # 自然语言回退
-    natural_map = {
-        "1+2+3+...": "Sum(n, (n, 1, oo))",
-        "1+4+9+16+...": "Sum(n**2, (n, 1, oo))",
-        "1+8+27+64+...": "Sum(n**3, (n, 1, oo))",
-        "1+2+4+8+...": "Sum(2**n, (n, 0, oo))",
-        "1+3+9+27+...": "Sum(3**n, (n, 0, oo))",
-        "1-1+1-1+...": "Sum((-1)**n, (n, 0, oo))",
-        "1-2+4-8+...": "Sum((-2)**n, (n, 0, oo))",
-        "1+1+2+6+24+...": "Sum(factorial(n), (n, 0, oo))",
-    }
-    if s in natural_map:
-        s = natural_map[s]
-    
     try:
         expr_str = s.replace('∑', 'Sum').replace('∞', 'oo').replace(' ', '')
         n = Symbol('n')
@@ -222,15 +161,16 @@ def compute(user_input):
         if isinstance(expr, Sum):
             summand = expr.args[0]
             var_tuple = expr.args[1]
+            var_name = str(var_tuple[0])
             upper = var_tuple[2]
             if upper != oo:
                 return {"status": "finite", "message": f"该级数上限为{str(upper)}，可直接计算。", "summand": str(summand)}
         else:
             return {"status": "error", "message": "无法识别为无穷级数。"}
-        asym_type, param, domain, mapping, steps, method, method_param = analyze_term(summand)
+        asym_type, param, domain, mapping, steps, method, method_param = analyze_term(summand, var_name)
         if asym_type == 'unknown':
             return {"status": "unknown", "input": s, "summand": str(summand),
-                    "message": f"无法识别通项的类型。通项为: {str(summand)}"}
+                    "message": "无法识别通项的类型。请尝试已知数论函数名。"}
         value = compute_spectral(method, method_param)
         return {"input": s, "summand": str(summand), "domain": domain,
                 "divergence": asym_type, "mapping_path": mapping, "steps": steps,
@@ -239,12 +179,8 @@ def compute(user_input):
     except Exception as e:
         return {"status": "error", "message": f"解析错误: {str(e)}。请尝试 Sum(n**2, (n,1,oo)) 格式。"}
 
-# ═══════════════════════════════════════════
-# 可视化
-# ═══════════════════════════════════════════
 def visualize_mapping(source_domain, mapping_path, save_path="static/graph.png"):
-    if not HAS_MPL:
-        return None
+    if not HAS_MPL: return None
     os.makedirs('static', exist_ok=True)
     fig, ax = plt.subplots(figsize=(10, 8))
     ax.set_xlim(-3, 4); ax.set_ylim(-2, 5); ax.set_aspect('equal'); ax.axis('off')
@@ -282,9 +218,6 @@ def visualize_mapping(source_domain, mapping_path, save_path="static/graph.png")
     plt.close()
     return save_path
 
-# ═══════════════════════════════════════════
-# Flask 应用
-# ═══════════════════════════════════════════
 app = Flask(__name__)
 
 HTML_TEMPLATE = '''
@@ -362,26 +295,30 @@ HTML_TEMPLATE = '''
             if (v === null || v === undefined) return '未知';
             if (v === Infinity || v === '∞') return '∞';
             if (Math.abs(v) < 1e-10) return '0';
-            var fracMap = {};
-            fracMap[-1/12] = '-1/12'; fracMap[0.5] = '1/2'; fracMap[-1] = '-1';
-            fracMap[1/3] = '1/3'; fracMap[0.25] = '1/4'; fracMap[1/120] = '1/120';
-            fracMap[-0.5] = '-1/2'; fracMap[-0.125] = '-1/8'; fracMap[-1/24] = '-1/24';
-            fracMap[-1/252] = '-1/252'; fracMap[1/252] = '1/252'; fracMap[-5/6] = '-5/6';
-            fracMap[1/144] = '1/144';
-            for (var k in fracMap) {
-                if (Math.abs(v - parseFloat(k)) < 1e-10) return v + ' = ' + fracMap[k];
-            }
+            if (v === -1/12) return '-0.083333 = -1/12';
+            if (v === 0.5) return '0.5 = 1/2';
+            if (v === -1) return '-1';
+            if (v === 1/3) return '0.333333 = 1/3';
+            if (v === 0.25) return '0.25 = 1/4';
+            if (v === 1/120) return '0.008333 = 1/120';
+            if (v === -0.5) return '-0.5 = -1/2';
+            if (v === -0.125) return '-0.125 = -1/8';
+            if (v === -1/24) return '-0.041667 = -1/24';
+            if (v === -1/252) return '-0.003968 = -1/252';
+            if (v === 1/252) return '0.003968 = 1/252';
+            if (v === -5/6) return '-0.833333 = -5/6';
+            if (v === 1/144) return '0.006944 = 1/144';
             var phi = (Math.sqrt(5)+1)/2;
             if (Math.abs(v - phi) < 1e-10) return v + ' = φ';
-            return typeof v === 'number' ? v.toFixed(6) : String(v);
+            return v.toFixed(6);
         }
         function buildHTML(d) {
             var h = '<h3>📊 计算报告</h3>';
-            h += '<div class="result-row"><span class="result-label">输入</span><span class="result-value">' + (d.input || 'N/A') + '</span></div>';
-            h += '<div class="result-row"><span class="result-label">通项</span><span class="result-value">' + (d.summand || 'N/A') + '</span></div>';
-            h += '<div class="result-row"><span class="result-label">原始域</span><span class="result-value">' + (d.domain || 'N/A') + '（' + (d.divergence || 'N/A') + '）</span></div>';
-            h += '<div class="result-row"><span class="result-label">映射路径</span><span class="result-value">' + (d.mapping_path || 'N/A') + '</span></div>';
-            h += '<div class="result-row"><span class="result-label">映射步数</span><span class="result-value">' + (d.steps || 'N/A') + ' 步（九域直径 ≤ 3）</span></div>';
+            h += '<div class="result-row"><span class="result-label">输入</span><span class="result-value">' + (d.input||'N/A') + '</span></div>';
+            h += '<div class="result-row"><span class="result-label">通项</span><span class="result-value">' + (d.summand||'N/A') + '</span></div>';
+            h += '<div class="result-row"><span class="result-label">原始域</span><span class="result-value">' + (d.domain||'N/A') + '（' + (d.divergence||'N/A') + '）</span></div>';
+            h += '<div class="result-row"><span class="result-label">映射路径</span><span class="result-value">' + (d.mapping_path||'N/A') + '</span></div>';
+            h += '<div class="result-row"><span class="result-label">映射步数</span><span class="result-value">' + (d.steps||'N/A') + ' 步（九域直径 ≤ 3）</span></div>';
             h += '<div class="result-highlight">坍缩值: ' + fmt(d.value) + '</div>';
             h += '<p style="text-align:center;color:#aaa;margin-top:10px;">发散是表象，守恒是本质。e^{iS} = 1</p>';
             return h;
@@ -461,9 +398,6 @@ def api_viz():
             return jsonify({'graph_url': '/static/graph.png'})
     return jsonify({'graph_url': None})
 
-# ═══════════════════════════════════════════
-# 启动
-# ═══════════════════════════════════════════
 if __name__ == "__main__":
     os.makedirs('static', exist_ok=True)
     port = int(os.environ.get("PORT", 5000))
