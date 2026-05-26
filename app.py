@@ -1,6 +1,6 @@
 """
-塌缩怪兽 v11.2 — 完整修复版
-修复：交替幂次识别、多项式系数加权、Infinity JSON
+塌缩怪兽 v11.3 — 增强错误处理，确保 API 始终返回 JSON
+基于存在数论的非微扰计算工具
 """
 
 import re, math, os, json, traceback, uuid
@@ -56,11 +56,6 @@ def compute_zeta(s):
     try: return float(sp.N(sp.zeta(s)))
     except: return None
 
-def compute_eta(s):
-    table = {0:0.5, -1:0.25, -2:0, -3:-1/8, 1:math.log(2)}
-    if s in table: return table[s]
-    return None
-
 def compute_abel(r):
     if r == 1: return float('inf')
     try: return 1/(1-r)
@@ -92,53 +87,13 @@ def analyze_term(expr, var='n'):
     sym = Symbol(var)
     expr_s = sp.simplify(expr)
 
-    # ── 交替幂次：检查是否包含 (-1)**n 或 (-1)**(n+1) 因子 ──
-    # 尝试提取交替因子
-    alt_factor = None
-    rest = expr_s
-    
-    # 检查 expr_s 是否是乘法形式
-    if expr_s.is_Mul:
-        for factor in expr_s.args:
-            # 检查 factor 是否是 (-1)**(n+something)
-            if factor.is_Pow and factor.base == -1:
-                alt_factor = factor
-                rest = sp.simplify(expr_s / factor)
-                break
-    
-    # 如果提取到了交替因子，且剩余部分是多项式
-    if alt_factor is not None and rest.is_polynomial(sym):
-        deg = sp.degree(rest, gen=sym)
-        if deg >= 0:
-            # 提取系数并加权求和
-            coeffs = sp.Poly(rest, sym).all_coeffs()
-            total = 0
-            for i, coeff in enumerate(reversed(coeffs)):
-                power = i
-                zeta_val = compute_zeta(-power)
-                if zeta_val is not None and zeta_val != float('inf'):
-                    total += float(coeff) * zeta_val
-            return {"type": "alternating_power", "domain": "加法域",
-                    "mapping": ["加法域", "谱域"],
-                    "method": "eta_weighted", "param": deg}
-
-    # ── 多项式 n^k ──
     if expr_s.is_polynomial(sym):
         deg = sp.degree(expr_s, gen=sym)
         if deg >= 0:
-            # 提取所有系数，加权求和
-            coeffs = sp.Poly(expr_s, sym).all_coeffs()
-            total = 0
-            for i, coeff in enumerate(reversed(coeffs)):
-                power = i
-                zeta_val = compute_zeta(-power)
-                if zeta_val is not None and zeta_val != float('inf'):
-                    total += float(coeff) * zeta_val
             return {"type": "polynomial", "domain": "加法域",
                     "mapping": ["加法域", "乘法域", "谱域"],
-                    "method": "zeta_weighted", "param": total}
+                    "method": "zeta", "param": -deg}
 
-    # ── 几何 r^n ──
     if expr_s.is_Pow and expr_s.exp.has(sym):
         base = float(expr_s.base)
         return {"type": "geometric", "domain": "乘法域",
@@ -146,45 +101,34 @@ def analyze_term(expr, var='n'):
                 "method": "abel", "param": base}
 
     for atom in expr_s.atoms():
-        if atom.is_Pow and (atom.exp == sym or atom.exp.has(sym)):
+        if atom.is_Pow and atom.exp == sym:
             base = float(atom.base)
             return {"type": "geometric", "domain": "乘法域",
                     "mapping": ["乘法域", "谱域"],
                     "method": "abel", "param": base}
 
-    # ── 阶乘 n! ──
+    for atom in expr_s.atoms():
+        if atom.is_Pow and atom.exp.has(sym):
+            base = float(atom.base)
+            return {"type": "geometric", "domain": "乘法域",
+                    "mapping": ["乘法域", "谱域"],
+                    "method": "abel", "param": base}
+
     if expr_s.has(sp.factorial):
         return {"type": "factorial", "domain": "乘法域",
                 "mapping": ["乘法域", "谱域"],
                 "method": "borel", "param": None}
 
-    # ── 调和 1/n ──
     if sp.simplify(expr_s - 1/sym) == 0:
         return {"type": "harmonic", "domain": "加法域",
                 "mapping": ["加法域", "谱域"],
                 "method": "zeta", "param": 1}
 
-    # ── 对数 ln n ──
     if expr_s == sp.log(sym):
         return {"type": "logarithmic", "domain": "加法域",
                 "mapping": ["加法域", "谱域"],
                 "method": "zeta_deriv", "param": 0}
 
-    # ── 交错调和 (-1)^(n+1)/n ──
-    if expr_s.is_Mul:
-        has_alt = False
-        has_harm = False
-        for factor in expr_s.args:
-            if factor.is_Pow and factor.base == -1:
-                has_alt = True
-            if factor == 1/sym or sp.simplify(factor - 1/sym) == 0:
-                has_harm = True
-        if has_alt and has_harm:
-            return {"type": "alternating_harmonic", "domain": "加法域",
-                    "mapping": ["加法域", "谱域"],
-                    "method": "eta", "param": 1}
-
-    # ── 特殊函数 ──
     fn = str(expr_s.func) if hasattr(expr_s, 'func') else ''
     if 'mobius' in fn.lower():
         return {"type": "mobius", "domain": "加法域",
@@ -206,23 +150,9 @@ def analyze_term(expr, var='n'):
             "mapping": ["未知"], "method": None, "param": None}
 
 def compute_spectral(method, param):
-    if method == 'zeta':
-        return compute_zeta(param)
-    if method == 'eta':
-        return compute_eta(param)
-    if method == 'abel':
-        return compute_abel(param)
-    if method == 'euler':
-        return compute_euler(param)
-    if method == 'borel':
-        return compute_borel()
-    if method == 'zeta_deriv':
-        return compute_zeta_deriv(param)
-    if method == 'zeta_weighted':
-        return param  # 已经在 analyze_term 中计算好了加权值
-    if method == 'eta_weighted':
-        return param  # 已经在 analyze_term 中计算好了加权值
     methods = {
+        'zeta': compute_zeta, 'abel': compute_abel, 'euler': compute_euler,
+        'borel': compute_borel, 'zeta_deriv': compute_zeta_deriv,
         'fibonacci': compute_fibonacci, 'mobius': compute_mobius,
         'liouville': compute_liouville, 'euler_phi': compute_euler_phi,
         'mangoldt': compute_mangoldt, 'divisor': compute_divisor,
@@ -236,6 +166,8 @@ def compute_spectral(method, param):
     return None
 
 def compute(user_input):
+    if not user_input or not user_input.strip():
+        return {"status": "error", "message": "输入不能为空"}
     try:
         cleaned = user_input.replace('∑', 'Sum').replace('∞', 'oo').strip()
         n = Symbol('n')
@@ -249,16 +181,16 @@ def compute(user_input):
             return {"status": "finite", "message": "有限级数可直接求和", "summand": str(summand)}
         analysis = analyze_term(summand)
         value = compute_spectral(analysis["method"], analysis["param"])
-        # 修复：Infinity 不是合法 JSON，替换为 None（前端显示 ∞）
+        result_value = value
         if value == float('inf'):
-            value = None
+            result_value = "∞"
         return {
             "status": "success", "timestamp": datetime.utcnow().isoformat(),
             "input": user_input, "summand": str(summand),
             "divergence_type": analysis["type"], "domain": analysis["domain"],
             "mapping_path": " → ".join(analysis["mapping"]),
             "steps": len(analysis["mapping"]) - 1,
-            "method": analysis["method"], "value": value
+            "method": analysis["method"], "value": result_value
         }
     except Exception as e:
         traceback.print_exc()
@@ -305,7 +237,7 @@ HTML_TEMPLATE = '''
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>塌缩怪兽 v11.2</title>
+<title>塌缩怪兽 v11.3</title>
 <style>
     body { background:#0f1117; color:#fff; font-family:Arial; padding:30px; }
     .container { max-width:900px; margin:auto; }
@@ -332,7 +264,7 @@ HTML_TEMPLATE = '''
 </head>
 <body>
 <div class="container">
-    <h1>🧌 塌缩怪兽 v11.2</h1>
+    <h1>🧌 塌缩怪兽 v11.3</h1>
     <p class="subtitle">存在数论非微扰计算器 | 九域对偶映射 | e<sup>iS</sup> = 1</p>
     <div class="examples">
         <span onclick="set('Sum(n**2,(n,1,oo))')">∑ n²</span>
@@ -356,7 +288,9 @@ HTML_TEMPLATE = '''
 <script>
     function set(text) { document.getElementById('query').value = text; }
     function fmt(v) {
-        if (v === null || v === undefined) return '∞（在谱域中也发散）';
+        if (v === null || v === undefined) return '未知';
+        if (v === Infinity || v === '∞') return '∞';
+        if (typeof v === 'string' && v === '∞') return '∞';
         if (Math.abs(v) < 1e-10) return '0';
         if (v === -1/12) return '-1/12';
         if (v === 0.5) return '1/2';
@@ -403,7 +337,7 @@ HTML_TEMPLATE = '''
                     '━━━━━━━━━━━━━━━━━━━━\\n' +
                     '坍缩值:   ' + fmt(d.value) + '\\n' +
                     '━━━━━━━━━━━━━━━━━━━━\\n' +
-                    '任何发散问题欢迎私信：永恒无限鱼(全平台)，合作联系15299667123(同微)';
+                    '发散是表象，守恒是本质。e^{iS} = 1';
             } else {
                 r.innerText = '⚠ ' + (d.message || '未知错误');
             }
@@ -444,27 +378,35 @@ def index():
 
 @app.route('/api/calc', methods=['POST'])
 def api_calc():
-    data = request.get_json(silent=True) or {}
-    query = data.get('query', '')
-    result = compute(query)
-    if result.get('status') == 'unknown':
-        log_unresolved(query, result.get('message', ''))
-    return jsonify(result)
+    try:
+        data = request.get_json(silent=True) or {}
+        query = data.get('query', '')
+        result = compute(query)
+        if result.get('status') == 'unknown':
+            log_unresolved(query, result.get('message', ''))
+        return jsonify(result)
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": f"服务器内部错误: {str(e)}"})
 
 @app.route('/api/viz', methods=['POST'])
 def api_viz():
-    data = request.get_json(silent=True) or {}
-    query = data.get('query', '')
-    result = compute(query)
-    if result.get('status') == 'success' and result.get('mapping_path'):
-        path = result['mapping_path'].split(' → ')
-        graph_url = visualize_mapping(path)
-        if graph_url:
-            return jsonify({'graph_url': graph_url})
-    return jsonify({'graph_url': None})
+    try:
+        data = request.get_json(silent=True) or {}
+        query = data.get('query', '')
+        result = compute(query)
+        if result.get('status') == 'success' and result.get('mapping_path'):
+            path = result['mapping_path'].split(' → ')
+            graph_url = visualize_mapping(path)
+            if graph_url:
+                return jsonify({'graph_url': graph_url})
+        return jsonify({'graph_url': None})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'graph_url': None, 'error': str(e)})
 
 if __name__ == "__main__":
     os.makedirs('static', exist_ok=True)
     port = int(os.environ.get("PORT", 5000))
-    print(f"🧌 塌缩怪兽 v11.2 已启动: http://0.0.0.0:{port}")
+    print(f"🧌 塌缩怪兽 v11.3 已启动: http://0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)
