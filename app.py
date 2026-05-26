@@ -1,5 +1,5 @@
 """
-塌缩怪兽 v20.0 — 修复 JSON 序列化 + 直接谱域强化
+塌缩怪兽 v20.1 — 彻底解决 JSON 序列化问题
 """
 
 import math, os, traceback, json, uuid
@@ -46,12 +46,12 @@ DUAL_GRAPH = {
     "范畴域": {"恒等态射对应0": "加法域", "恒等态射对应1": "乘法域"}
 }
 
-# ========== 动态数 ==========
+# ========== 动态数（start 已强制为 int） ==========
 class DynamicNumber:
     def __init__(self, expr, domain, start=1, history=None):
         self.expr = expr
         self.domain = domain
-        self.start = start
+        self.start = int(start)      # 保证 int
         self.history = history or []
 
     def evolve(self, new_expr, new_domain, mapping_name):
@@ -102,24 +102,20 @@ class Evaluator:
     def evaluate(self, dn):
         if dn.domain == "谱域":
             return self._eval_spectral(dn)
-        # 其他域暂不实现，全部由谱域兜底
         return None
 
     def _eval_spectral(self, dn):
         expr = dn.expr
         start = dn.start
 
-        # --- 特殊常数 ---
         if expr == sp.Integer(0) or expr == 0:
             return 0.0
         if expr == sp.Integer(1) or expr == 1:
-            return float('inf') if start >= 1 else 1.0  # 常数级数发散
+            return float('inf') if start >= 1 else 1.0
 
-        # --- 调和 ---
         if sp.simplify(expr - 1/n_sym) == 0:
             return float('inf')
 
-        # --- 纯幂 n^k ---
         if self._is_pure_power(expr):
             k = self._get_exponent(expr)
             try:
@@ -130,7 +126,6 @@ class Evaluator:
             except:
                 pass
 
-        # --- 几何 r^n ---
         base = self._get_geometric_base(expr)
         if base is not None and base != 1:
             if start == 0:
@@ -138,50 +133,41 @@ class Evaluator:
             else:
                 return float(base / (1 - base))
 
-        # --- 交错级数（Euler求和优先）---
         if self._is_alternating(expr):
             euler = self._euler_sum(expr, start)
             if euler is not None and math.isfinite(euler):
                 return euler
-            # 回退：生成函数极限（可能不正确，但至少有限）
             limit = self._generating_function_limit(expr, start)
             if limit is not None:
                 return limit
 
-        # --- 对数 ---
         if expr == log(n_sym):
             return 0.5 * math.log(2 * math.pi)
 
-        # --- 数论函数 ---
         special = self._special_number_theoretic(expr)
         if special is not None:
             return special
 
-        # --- 阶乘 (Borel 已知值或计算) ---
         if expr == factorial(n_sym):
             if start == 0:
-                return 0.5963473623231941   # ∑_{n=0}∞ n! Borel和
+                return 0.5963473623231941
             else:
-                # ∑_{n=1}∞ n! = ∑_{n=0}∞ n! - 1
                 return 0.5963473623231941 - 1.0
 
         if expr == factorial(n_sym)**2:
             if start == 0:
-                return -0.023  # 存在数论预言值
+                return -0.023
             else:
-                return -0.023 - 1.0  # 减掉 n=0 项 0!^2=1
+                return -0.023 - 1.0
 
-        # --- n^n (超指数，用近似) ---
         if expr.is_Pow and expr.args[0] == n_sym and expr.args[1] == n_sym:
             return self._borelf(expr)
 
-        # --- 通用 Borel ---
         if self._has_factorial(expr):
             val = self._borel_sum(expr, start)
             if val is not None:
                 return val
 
-        # --- mpmath 最后尝试 ---
         try:
             f = sp.lambdify(n_sym, expr, 'mpmath')
             return float(mp.nsum(f, [start, mp.inf], method='shanks'))
@@ -230,13 +216,13 @@ class Evaluator:
         exponent = sign_factor.args[1]
         diff_p1 = sp.simplify(exponent - (n_sym + 1))
         if diff_p1 == 0:
-            return (core, 1)      # (-1)^{n+1}
+            return (core, 1)
         diff_n = sp.simplify(exponent - n_sym)
         if diff_n == 0:
-            return (core, -1)     # (-1)^n
+            return (core, -1)
         diff_m1 = sp.simplify(exponent - (n_sym - 1))
         if diff_m1 == 0:
-            return (core, -1)     # (-1)^{n-1}
+            return (core, -1)
         return None
 
     def _is_alternating(self, expr):
@@ -254,8 +240,6 @@ class Evaluator:
                 a = [a[i+1] - a[i] for i in range(len(a)-1)]
                 diffs.append(a[0])
             total = sum(d * (-1)**k / 2**(k+1) for k, d in enumerate(diffs))
-            # parity=1 对应 (-1)^{n+1}，标准 Euler 变换用于 ∑(-1)^n a_n
-            # 如果原级数是 ∑(-1)^{n+1} a_n，则值 = ∑(-1)^n (-a_n)，即 -total
             return total if parity == -1 else -total
         except:
             return None
@@ -308,13 +292,11 @@ class Collapser:
         self.evaluator = Evaluator()
 
     def collapse(self, dn):
-        # 直接谱域绝对优先
         direct = DynamicNumber(dn.expr, "谱域", dn.start, [("直接", "谱域")])
         val = self.evaluator.evaluate(direct)
         if val is not None and math.isfinite(val):
             return val, [("直接", "谱域")], "1/1 直接"
 
-        # 其次加法域→积分域→谱域
         if dn.domain == "加法域":
             f1 = FUNCTOR_REGISTRY.get(("加法域", "积分域"))
             f2 = FUNCTOR_REGISTRY.get(("积分域", "谱域"))
@@ -325,7 +307,6 @@ class Collapser:
                 if val is not None and math.isfinite(val):
                     return val, [("黎曼和极限", "积分域"), ("拉普拉斯变换", "谱域")], "1/1"
 
-        # 其他路径仅作备用（通常不会用到）
         paths = self.pathfinder.find_all_paths(dn.domain)
         results = defaultdict(list)
         for path in paths:
@@ -347,16 +328,18 @@ class Collapser:
             return best, p, cons
         return None, None, "无解"
 
-# ========== 输入解析 ==========
+# ========== 输入解析（已修复 start 序列化） ==========
 def parse_input(user_input):
     cleaned = user_input.replace('∑', 'Sum').replace('∞', 'oo').strip()
     expr = sp.sympify(cleaned, locals=SAFE_LOCALS)
     if not isinstance(expr, Sum):
         expr = Sum(expr, (n_sym, 1, oo))
     summand = expr.args[0]
-    var, start, end = expr.args[1]
+    var, start_raw, end = expr.args[1]
     if end != oo:
         raise ValueError("仅支持无穷级数")
+    # 关键修复：强制转 int
+    start = int(start_raw)
     domain = classify_domain(summand)
     return DynamicNumber(summand, domain, start)
 
@@ -381,7 +364,7 @@ HTML_TEMPLATE = '''
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>塌缩怪兽 v20.0</title>
+<title>塌缩怪兽 v20.1</title>
 <style>
     body { background:#0f1117; color:#fff; font-family:Arial; padding:30px; }
     .container { max-width:900px; margin:auto; }
@@ -404,8 +387,8 @@ HTML_TEMPLATE = '''
 </head>
 <body>
 <div class="container">
-    <h1>🧌 塌缩怪兽 v20.0</h1>
-    <p class="subtitle">直接谱域·稳定求值 | e<sup>iS</sup>=1</p>
+    <h1>🧌 塌缩怪兽 v20.1</h1>
+    <p class="subtitle">JSON 序列化修复 | 直接谱域 | e<sup>iS</sup>=1</p>
     <div class="examples">
         <span>Sum(n**2,(n,1,oo))</span>
         <span>Sum(n,(n,1,oo))</span>
@@ -509,7 +492,7 @@ def api_calc():
         value, path, consensus = collapser.collapse(dn)
         if value is None:
             return jsonify({"status": "unresolved", "message": "所有路径均无法给出有限坍缩值"})
-        # 确保 value 可序列化
+        # 强制转 float 防 sympy 对象
         try:
             value = float(value)
         except:
@@ -535,5 +518,5 @@ def api_calc():
 if __name__ == '__main__':
     os.makedirs('static', exist_ok=True)
     port = int(os.environ.get("PORT", 5000))
-    print(f"🧌 塌缩怪兽 v20.0 启动: http://0.0.0.0:{port}")
+    print(f"🧌 塌缩怪兽 v20.1 启动: http://0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)
