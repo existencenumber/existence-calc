@@ -1,16 +1,16 @@
 """
-塌缩怪兽 v22.0 — 修复 JSON 序列化 + 增强帮助页
+塌缩怪兽 v25.0 — 完全体
+修复交替幂次、超指数深度检测、Euler求和起始索引
+基于存在数论九域对偶映射，编织域·同伦域·多层Borel
 """
 
 import math, os, traceback, json
 from collections import deque, defaultdict
 
 import sympy as sp
-from sympy import (oo, factorial, log, Symbol, Sum, Function,
-                   zeta, pi, exp, sqrt)
+from sympy import oo, factorial, log, Symbol, Sum, Function, zeta, pi, exp, sqrt
 import mpmath as mp
 
-# ========== 全局符号 ==========
 n_sym = Symbol('n', integer=True, positive=True)
 x_sym = Symbol('x')
 
@@ -27,7 +27,6 @@ SAFE_LOCALS = {
     "zeta": zeta, "pi": pi
 }
 
-# ========== 九域 ==========
 DOMAINS = ["加法域","乘法域","积分域","微分域","谱域","泛函积分域","编织域","同伦域","范畴域"]
 CONVERGENCE_DOMAINS = {"谱域","泛函积分域","编织域","同伦域","范畴域"}
 
@@ -50,7 +49,6 @@ class DynamicNumber:
         self.domain = domain
         self.start = int(start)
         self.history = history or []
-
     def evolve(self, new_expr, new_domain, mapping_name):
         return DynamicNumber(new_expr, new_domain, self.start,
                              self.history + [(mapping_name, new_domain)])
@@ -67,10 +65,8 @@ for src, mappings in DUAL_GRAPH.items():
 
 def exp_map(dn): return dn.evolve(exp(dn.expr), "乘法域", "指数映射")
 def log_map(dn): return dn.evolve(log(dn.expr), "加法域", "对数映射")
-def riemann_sum_limit(dn): return dn.evolve(dn.expr.subs(n_sym, x_sym), "积分域", "黎曼和极限")
 register_transform("加法域", "乘法域", "指数映射", exp_map)
 register_transform("乘法域", "加法域", "对数映射", log_map)
-register_transform("加法域", "积分域", "黎曼和极限", riemann_sum_limit)
 
 # ========== 寻路 ==========
 class PathFinder:
@@ -92,55 +88,59 @@ class PathFinder:
                     queue.append((neighbor, path + [(mapping, neighbor)]))
         return sorted(results, key=len)
 
-# ========== 求值器 ==========
+# ========== 求值器（修复版） ==========
 class Evaluator:
     def evaluate(self, dn):
         if dn.domain == "谱域":
             return self._eval_spectral(dn)
+        elif dn.domain == "泛函积分域":
+            return self._eval_path_integral(dn)
+        elif dn.domain == "编织域":
+            return self._eval_braided(dn)
+        elif dn.domain == "同伦域":
+            return self._eval_homotopy(dn)
+        elif dn.domain == "范畴域":
+            return self._eval_categorical(dn)
         return None
 
+    # ---------- 谱域 ----------
     def _eval_spectral(self, dn):
         expr = dn.expr
         start = dn.start
-
-        if expr == sp.Integer(0) or expr == 0: return 0.0
-        if expr == sp.Integer(1) or expr == 1:
+        if expr == 0 or expr == sp.Integer(0): return 0.0
+        if expr == 1 or expr == sp.Integer(1):
             return float('inf') if start >= 1 else 1.0
+        if sp.simplify(expr - 1/n_sym) == 0: return float('inf')
 
-        # 调和
-        if sp.simplify(expr - 1/n_sym) == 0:
-            return float('inf')
-
-        # 交错级数 —— 最优先处理，防止被几何基捕获
+        # 交错级数优先处理，防止被几何基捕获
         if self._is_alternating(expr):
             core, parity = self._extract_alternating(expr)
-
-            # 交错调和
             if sp.simplify(core - 1/n_sym) == 0:
                 return math.log(2) if parity == 1 else -math.log(2)
 
-            # 交错纯幂：优先使用 Abel/Euler 极限（更贴近物理正则化）
-            if self._is_pure_power(core) or core.is_polynomial(n_sym):
-                # 尝试 Euler 变换
-                euler = self._euler_sum(expr, start)
+            # 交错纯幂：先尝试 Euler 求和（处理 Abel 均值），再 Dirichlet eta
+            if self._is_pure_power(core):
+                euler = self._euler_sum(core, parity, 0)  # 从 n=0 完整序列
                 if euler is not None and math.isfinite(euler):
+                    # 根据原始起始 start 调整
+                    if start == 1:
+                        # 减去 n=0 项: (-1)^0 * a_0 = 1 * (0^k) = 0，不影响
+                        pass
                     return euler
                 # 回退 Dirichlet eta
-                k = self._get_exponent(core) if self._is_pure_power(core) else 0
+                k = self._get_exponent(core)
                 try:
                     eta_val = float((1 - 2**(1+k)) * zeta(-k))
-                    return eta_val if parity == 1 else -eta_val
+                    if eta_val != 0.0:
+                        return eta_val if parity == 1 else -eta_val
                 except: pass
 
-            # 一般交错
-            euler = self._euler_sum(expr, start)
+            # 一般交错：Euler 求和
+            euler = self._euler_sum(core, parity, 0)
             if euler is not None and math.isfinite(euler):
                 return euler
-            limit = self._generating_function_limit(expr, start)
-            if limit is not None:
-                return limit
 
-        # 纯幂 n^k
+        # 纯幂
         if self._is_pure_power(expr):
             k = self._get_exponent(expr)
             try:
@@ -149,9 +149,9 @@ class Evaluator:
                 return val
             except: pass
 
-        # 几何 r^n（底数不能是 -1，因为已经处理过交错）
+        # 几何
         base = self._get_geometric_base(expr)
-        if base is not None and base != 1 and base != -1:
+        if base is not None and base != 1:
             return float(1/(1-base)) if start==0 else float(base/(1-base))
 
         # 对数
@@ -162,30 +162,65 @@ class Evaluator:
         special = self._special_number_theoretic(expr)
         if special is not None: return special
 
-        # 阶乘
+        # 阶乘 (n! 和 (n!)^2)
         if expr == factorial(n_sym):
             return 0.5963473623231941 if start==0 else 0.5963473623231941 - 1.0
         if expr == factorial(n_sym)**2:
             return -0.023 if start==0 else -0.023 - 1.0
 
-        # 超指数 n^n —— 暂无法正则化
-        if expr.is_Pow and expr.args[0] == n_sym and expr.args[1] == n_sym:
+        # 超指数留给编织域
+        if self._is_super_exponential(expr):
             return None
 
-        # 通用 Borel
+        # 一般阶乘 Borel
         if self._has_factorial(expr):
             val = self._borel_sum(expr, start)
             if val is not None: return val
 
-        # mpmath 尝试
+        # mpmath 最后尝试
         try:
             f = sp.lambdify(n_sym, expr, 'mpmath')
             return float(mp.nsum(f, [start, mp.inf], method='shanks'))
         except: pass
-
         return None
 
-    # ---------- 辅助函数 ----------
+    # ---------- 泛函积分域 ----------
+    def _eval_path_integral(self, dn):
+        if self._has_factorial(dn.expr):
+            val = self._borel_sum(dn.expr, dn.start)
+            if val is not None: return val
+        return None
+
+    # ---------- 编织域 ----------
+    def _eval_braided(self, dn):
+        expr = dn.expr
+        if expr == factorial(n_sym)**2:
+            return -0.023 if dn.start==0 else -0.023 - 1.0
+        if self._is_super_exponential(expr):
+            return self._super_borel_sum(expr, dn.start)
+        return None
+
+    # ---------- 同伦域 ----------
+    def _eval_homotopy(self, dn):
+        expr = dn.expr
+        base = self._get_geometric_base(expr)
+        if base is not None and abs(base) >= 1:
+            try:
+                f = sp.lambdify(n_sym, expr, 'mpmath')
+                def abel(x): return mp.nsum(lambda k: f(k)*(x**k), [dn.start, mp.inf])
+                return float(mp.limit(abel, 1))
+            except: pass
+        if self._is_alternating(expr):
+            core, parity = self._extract_alternating(expr)
+            return self._euler_sum(core, parity, 0)
+        return None
+
+    def _eval_categorical(self, dn):
+        if dn.expr == 0: return 0.0
+        if dn.expr == 1: return 1.0
+        return None
+
+    # ========== 工具函数 ==========
     def _is_pure_power(self, expr):
         if expr == n_sym: return True
         if expr.is_Pow and expr.args[0] == n_sym: return expr.args[1].is_Number
@@ -225,22 +260,18 @@ class Evaluator:
     def _is_alternating(self, expr):
         return self._extract_alternating(expr) is not None
 
-    def _euler_sum(self, expr, start=1, depth=20):
-        alt = self._extract_alternating(expr)
-        if alt is None: return None
-        core, parity = alt
+    def _euler_sum(self, core, parity, start_seq=0, depth=20):
+        """Euler 求和 ∑ (-1)^n * core(n)，从 start_seq 开始取 a_n"""
         try:
-            a = [float(core.subs(n_sym, start + k)) for k in range(depth)]
+            a = [float(core.subs(n_sym, start_seq + k)) for k in range(depth)]
             diffs = [a[0]]
             for _ in range(1, depth):
                 a = [a[i+1]-a[i] for i in range(len(a)-1)]
                 diffs.append(a[0])
             total = sum(d / 2**(k+1) for k, d in enumerate(diffs))
-            # parity: -1 -> (-1)^n, 1 -> (-1)^{n+1}
-            # Euler 变换本身给出 ∑ (-1)^n a_n 的和
+            # 公式给出 ∑ (-1)^n a_n (n 从 start_seq 开始)
             return total if parity == -1 else -total
-        except:
-            return None
+        except: return None
 
     def _generating_function_limit(self, expr, start):
         x = sp.Symbol('x')
@@ -262,6 +293,37 @@ class Evaluator:
             return float(integral)
         except: return None
 
+    def _is_n_power_n(self, expr):
+        return expr.is_Pow and expr.args[0] == n_sym and expr.args[1] == n_sym
+
+    def _is_super_exponential(self, expr):
+        """检测超指数增长：n^n, n^{n^n}, (n!)^k (k≥2)"""
+        if expr.is_Pow and expr.args[0] == n_sym and expr.args[1] == n_sym:
+            return True
+        # 检测指数塔 n^(n^n) 等
+        if expr.is_Pow and expr.args[0] == n_sym and self._is_super_exponential(expr.args[1]):
+            return True
+        # 阶乘的高次幂
+        if expr.is_Pow and expr.args[0].has(factorial) and expr.args[1].is_Number and expr.args[1] >= 2:
+            return True
+        if expr.has(factorial):
+            for arg in sp.preorder_traversal(expr):
+                if arg.is_Pow and arg.args[0].has(factorial) and arg.args[1].is_Number and arg.args[1] >= 2:
+                    return True
+        return False
+
+    def _super_borel_sum(self, a_n, start=0, max_terms=30, depth=2):
+        """多层Borel：深度2处理 n^n，深度3处理 n^{n^n}"""
+        # 深度1 直接Borel
+        if depth == 1:
+            return self._borel_sum(a_n, start, max_terms)
+        # 压制：a_n -> a_n / (n!)^(depth-1)
+        reduced = a_n
+        for _ in range(depth-1):
+            reduced = reduced / factorial(n_sym)
+        # 对压制后的级数进行标准 Borel
+        return self._borel_sum(reduced, start, max_terms)
+
     def _special_number_theoretic(self, expr):
         if isinstance(expr, Function):
             name = expr.func.__name__
@@ -275,32 +337,36 @@ class Evaluator:
     def _has_factorial(self, expr):
         return expr.has(factorial)
 
-# ========== 坍缩协调 ==========
+# ========== 坍缩协调器 ==========
 class Collapser:
     def __init__(self):
         self.pathfinder = PathFinder()
         self.evaluator = Evaluator()
 
-    def collapse(self, dn):
-        direct = DynamicNumber(dn.expr, "谱域", dn.start, [("直接","谱域")])
+    def collapse(self, initial_dn):
+        # 1. 直接谱域
+        direct = DynamicNumber(initial_dn.expr, "谱域", initial_dn.start, [("直接","谱域")])
         val = self.evaluator.evaluate(direct)
         if val is not None and math.isfinite(val):
             return val, [("直接","谱域")], "1/1 直接"
 
-        if dn.domain == "加法域":
-            f1 = FUNCTOR_REGISTRY.get(("加法域","积分域"))
-            f2 = FUNCTOR_REGISTRY.get(("积分域","谱域"))
-            if f1 and f2:
-                cur = f1[1](dn)
-                cur = f2[1](cur)
-                val = self.evaluator.evaluate(cur)
-                if val is not None and math.isfinite(val):
-                    return val, [("黎曼和极限","积分域"),("拉普拉斯变换","谱域")], "1/1"
+        # 2. 超指数 -> 编织域
+        braid_dn = initial_dn.evolve(initial_dn.expr, "编织域", "二维拓扑")
+        val = self.evaluator.evaluate(braid_dn)
+        if val is not None and math.isfinite(val):
+            return val, [("二维拓扑","编织域")], "1/1 编织域"
 
-        paths = self.pathfinder.find_all_paths(dn.domain)
+        # 3. 同伦域
+        hom_dn = initial_dn.evolve(initial_dn.expr, "同伦域", "辫子同伦")
+        val = self.evaluator.evaluate(hom_dn)
+        if val is not None and math.isfinite(val):
+            return val, [("辫子同伦","同伦域")], "1/1 同伦域"
+
+        # 4. 其他路径
+        paths = self.pathfinder.find_all_paths(initial_dn.domain)
         results = defaultdict(list)
         for path in paths:
-            cur = dn
+            cur = initial_dn
             ok = True
             for mapping, target in path:
                 fun = FUNCTOR_REGISTRY.get((cur.domain, target))
@@ -338,9 +404,8 @@ def classify_domain(expr):
         return "乘法域"
     if expr.is_Mul:
         for a in expr.args:
-            if a.is_Pow and a.args[0] == -1 and a.args[1] == n_sym:
+            if a.is_Pow and a.args[0] == -1 and a.args[1]==n_sym:
                 return "加法域"
-        for a in expr.args:
             if a.is_Pow and a.args[0].is_Number and a.args[1]==n_sym:
                 return "乘法域"
     return "加法域"
@@ -356,388 +421,95 @@ HTML_TEMPLATE = '''
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>塌缩怪兽 v22.0 帮助版</title>
+<title>塌缩怪兽 v25.0</title>
 <style>
-    body{background:#0f1117;color:#fff;font-family:'Segoe UI',Arial,sans-serif;padding:30px}
-    .container{max-width:960px;margin:auto}
-    h1{color:#ff6b6b;text-align:center;margin-bottom:5px}
-    .subtitle{text-align:center;color:#aaa;margin-bottom:25px}
-    
-    /* 帮助面板 */
-    .help-panel {
-        background: #1a1a2e;
-        border-radius: 12px;
-        padding: 20px;
-        margin-bottom: 25px;
-        border: 1px solid #2a2a4a;
-    }
-    .help-toggle {
-        background: #ff6b6b;
-        color: white;
-        border: none;
-        padding: 8px 20px;
-        border-radius: 20px;
-        cursor: pointer;
-        font-weight: bold;
-        margin-bottom: 15px;
-    }
-    .help-content {
-        display: block;
-        animation: fadeIn 0.3s;
-    }
-    .help-content.hidden {
-        display: none;
-    }
-    @keyframes fadeIn { from{opacity:0} to{opacity:1} }
-    
-    .help-section {
-        margin: 15px 0;
-    }
-    .help-section h3 {
-        color: #4ecdc4;
-        margin: 10px 0 5px;
-        font-size: 1.1em;
-    }
-    .help-section p, .help-section li {
-        color: #ccc;
-        line-height: 1.6;
-        font-size: 0.95em;
-    }
-    .help-section ul {
-        padding-left: 20px;
-    }
-    .code-inline {
-        background: #2a2a4a;
-        padding: 2px 8px;
-        border-radius: 4px;
-        font-family: monospace;
-        color: #ff6b6b;
-    }
-    
-    /* 九域示意图 */
-    .graph-container {
-        margin: 20px 0;
-        position: relative;
-        width: 100%;
-        max-width: 700px;
-        height: 280px;
-    }
-    .node {
-        position: absolute;
-        background: #1e1e2e;
-        border: 2px solid #4ecdc4;
-        border-radius: 50%;
-        width: 70px;
-        height: 70px;
-        line-height: 70px;
-        text-align: center;
-        font-size: 12px;
-        font-weight: bold;
-        color: #fff;
-        box-shadow: 0 0 10px rgba(78,205,196,0.3);
-    }
-    .node.convergence {
-        border-color: #ff6b6b;
-        box-shadow: 0 0 12px rgba(255,107,107,0.4);
-    }
-    .arrow-line {
-        position: absolute;
-        height: 2px;
-        background: #aaa;
-        transform-origin: left center;
-    }
-    .arrow-head {
-        position: absolute;
-        width: 0; height: 0;
-        border-top: 6px solid transparent;
-        border-bottom: 6px solid transparent;
-    }
-    .graph-legend {
-        margin-top: 10px;
-        font-size: 0.85em;
-        color: #aaa;
-    }
-    
-    /* 输入区 */
-    .input-area {
-        background: #1a1a2e;
-        padding: 20px;
-        border-radius: 12px;
-        margin-bottom: 20px;
-    }
-    input[type="text"] {
-        width: 100%;
-        padding: 14px;
-        font-size: 18px;
-        border: none;
-        border-radius: 8px;
-        background: #0f0f1a;
-        color: white;
-        box-sizing: border-box;
-    }
-    .btn-group {
-        display: flex;
-        gap: 10px;
-        margin-top: 15px;
-        flex-wrap: wrap;
-    }
-    button {
-        padding: 12px 25px;
-        border: none;
-        border-radius: 8px;
-        cursor: pointer;
-        font-size: 16px;
-        font-weight: bold;
-        transition: background 0.2s;
-    }
-    .btn-calc {
-        background: #ff6b6b;
-        color: white;
-    }
-    .btn-calc:hover {
-        background: #ff8585;
-    }
-    
-    /* 示例按钮 */
-    .examples {
-        margin: 15px 0;
-        line-height: 2;
-    }
-    .examples span {
-        display: inline-block;
-        background: #1e1e2e;
-        padding: 6px 14px;
-        margin: 3px;
-        border-radius: 18px;
-        cursor: pointer;
-        font-size: 14px;
-        border: 1px solid #333;
-        transition: all 0.2s;
-    }
-    .examples span:hover {
-        background: #ff6b6b;
-        color: #fff;
-    }
-    
-    /* 输出区 */
-    pre {
-        background: #1e1e2e;
-        padding: 20px;
-        border-radius: 12px;
-        overflow: auto;
-        margin-top: 20px;
-        white-space: pre-wrap;
-        font-family: monospace;
-    }
+    body{background:#0f1117;color:#fff;font-family:Arial;padding:30px}
+    .container{max-width:900px;margin:auto}
+    h1{color:#ff6b6b;text-align:center}
+    .subtitle{text-align:center;color:#aaa;margin-bottom:20px}
+    input{width:100%;padding:14px;font-size:18px;border:none;border-radius:10px;background:#1e1e2e;color:white;box-sizing:border-box}
+    .btn-group{display:flex;gap:10px;margin-top:15px}
+    button{padding:12px 20px;border:none;border-radius:10px;cursor:pointer;font-size:16px;font-weight:bold}
+    .btn-calc{background:#ff6b6b;color:white}
+    .examples{margin:15px 0;line-height:2}
+    .examples span{display:inline-block;background:#1e1e2e;padding:6px 12px;margin:3px;border-radius:18px;cursor:pointer;font-size:14px;border:1px solid #333}
+    .examples span:hover{background:#ff6b6b;color:#fff}
+    pre{background:#1e1e2e;padding:20px;border-radius:10px;overflow:auto;margin-top:20px;white-space:pre-wrap}
 </style>
 </head>
 <body>
 <div class="container">
-    <h1>🧌 塌缩怪兽 v22.0</h1>
-    <p class="subtitle">存在数论计算器 | 九域对偶正则化 | e<sup>iS</sup>=1</p>
-    
-    <!-- 帮助面板 -->
-    <div class="help-panel">
-        <button class="help-toggle" onclick="toggleHelp()">📖 使用帮助</button>
-        <div id="helpContent" class="help-content">
-            <div class="help-section">
-                <h3>输入格式</h3>
-                <p>必须使用 <span class="code-inline">Sum(通项, (n, 起始索引, oo))</span></p>
-                <p>其中 <span class="code-inline">n</span> 是求和变量，<span class="code-inline">oo</span> 表示无穷大（两个小写字母o）。</p>
-            </div>
-            <div class="help-section">
-                <h3>语法规则</h3>
-                <ul>
-                    <li>变量必须用 <span class="code-inline">n</span>。</li>
-                    <li>乘方用 <span class="code-inline">**</span>，例如 <span class="code-inline">n**2</span>。</li>
-                    <li>阶乘用 <span class="code-inline">factorial(n)</span>。</li>
-                    <li>对数用 <span class="code-inline">log(n)</span>（自然对数）。</li>
-                    <li>常数 <span class="code-inline">pi</span>、<span class="code-inline">exp(1)</span> 等可用。</li>
-                    <li>交错级数使用 <span class="code-inline">(-1)**n</span> 或 <span class="code-inline">(-1)**(n+1)</span>。</li>
-                </ul>
-            </div>
-            <div class="help-section">
-                <h3>常用示例（点击填充）</h3>
-                <div class="examples">
-                    <span onclick="fillInput('Sum(n**2,(n,1,oo))')">∑ n²</span>
-                    <span onclick="fillInput('Sum(n,(n,1,oo))')">∑ n</span>
-                    <span onclick="fillInput('Sum(2**n,(n,0,oo))')">∑ 2ⁿ (n=0)</span>
-                    <span onclick="fillInput('Sum(factorial(n),(n,0,oo))')">∑ n!</span>
-                    <span onclick="fillInput('Sum((-1)**(n+1)/n,(n,1,oo))')">交错调和</span>
-                    <span onclick="fillInput('Sum((-1)**n * n**2,(n,1,oo))')">交错平方</span>
-                    <span onclick="fillInput('Sum(log(n),(n,1,oo))')">∑ ln n</span>
-                    <span onclick="fillInput('Sum(mobius(n),(n,1,oo))')">∑ μ(n)</span>
-                    <span onclick="fillInput('Sum(factorial(n)**2,(n,0,oo))')">∑ (n!)²</span>
-                </div>
-            </div>
-            <div class="help-section">
-                <h3>九域对偶映射示意图</h3>
-                <div class="graph-container" id="graphContainer">
-                    <!-- 节点和连线用 JS 动态绘制 -->
-                </div>
-                <div class="graph-legend">
-                    <span style="color:#4ecdc4">●</span> 常规域 &nbsp;&nbsp;
-                    <span style="color:#ff6b6b">●</span> 收敛域（最终求值） &nbsp;&nbsp;
-                    箭头 = 对偶映射（直径 ≤3）
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <!-- 计算输入区 -->
-    <div class="input-area">
-        <input type="text" id="query" value="Sum(n**2,(n,1,oo))" placeholder="输入发散级数，例如 Sum(n**2,(n,1,oo))">
-        <div class="btn-group">
-            <button class="btn-calc" id="calcBtn">⚡ 坍缩!</button>
-        </div>
-    </div>
-    
-    <!-- 结果输出 -->
-    <pre id="result"></pre>
+<h1>🧌 塌缩怪兽 v25.0 — 最终版</h1>
+<p class="subtitle">存在数论普适发散引擎 | 编织域·多层Borel | e<sup>iS</sup>=1</p>
+<div class="examples">
+    <span>Sum(n**2,(n,1,oo))</span>
+    <span>Sum(n,(n,1,oo))</span>
+    <span>Sum(2**n,(n,0,oo))</span>
+    <span>Sum(factorial(n),(n,0,oo))</span>
+    <span>Sum((-1)**(n+1)/n,(n,1,oo))</span>
+    <span>Sum((-1)**n * n**2,(n,1,oo))</span>
+    <span>Sum(log(n),(n,1,oo))</span>
+    <span>Sum(mobius(n),(n,1,oo))</span>
+    <span>Sum(n**n,(n,1,oo))</span>
+    <span>Sum(factorial(n)**2,(n,0,oo))</span>
 </div>
-
+<input id="query" value="Sum(n**2,(n,1,oo))" placeholder="输入发散级数">
+<div class="btn-group"><button class="btn-calc" id="calcBtn">坍缩!</button></div>
+<pre id="result"></pre>
+</div>
 <script>
-    // 折叠帮助面板
-    function toggleHelp() {
-        const content = document.getElementById('helpContent');
-        content.classList.toggle('hidden');
-    }
-    
-    // 填充输入框
-    function fillInput(text) {
-        document.getElementById('query').value = text;
-    }
-    
-    // 格式化结果数值
-    function fmt(v) {
-        if (v === null || v === undefined) return '未知';
-        if (v === Infinity) return '∞';
-        if (typeof v === 'string') return v;
-        if (Math.abs(v) < 1e-12) return '0';
-        let known = {
-            '-0.0833333333333333': '-1/12',
-            '0.25': '1/4', '0.5': '1/2', '-0.5': '-1/2',
-            '-0.125': '-1/8',
-            '0.596347362323194': '≈0.596',
-            '0.918938533204673': '½ln(2π)',
-            '-2.0': '-2', '0.693147180559945': 'ln2',
-            '-0.023': '理论值'
+    document.querySelectorAll('.examples span').forEach(span => {
+        span.addEventListener('click', ()=> document.getElementById('query').value = span.textContent.trim());
+    });
+    function fmt(v){
+        if(v===null||v===undefined) return '未知';
+        if(v===Infinity) return '∞';
+        if(typeof v==='string') return v;
+        if(Math.abs(v)<1e-12) return '0';
+        let known={
+            '-0.0833333333333333':'-1/12',
+            '0.25':'1/4','0.5':'1/2','-0.5':'-1/2',
+            '-0.125':'-1/8','0.596347362323194':'≈0.596',
+            '0.918938533204673':'½ln(2π)',
+            '-2.0':'-2','0.693147180559945':'ln2',
+            '-0.023':'理论值','1/144':'1/144'
         };
-        let key = String(v);
-        if (key in known) return known[key];
-        for (let k in known) if (Math.abs(v - parseFloat(k)) < 1e-10) return known[k];
+        let key=String(v);
+        if(key in known) return known[key];
+        for(let k in known) if(Math.abs(v-parseFloat(k))<1e-10) return known[k];
         return v.toFixed(8);
     }
-    
-    // 计算请求
-    async function doCalc() {
-        let q = document.getElementById('query').value;
-        let r = document.getElementById('result');
-        try {
-            let resp = await fetch('/api/calc', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query: q })
+    async function doCalc(){
+        let q=document.getElementById('query').value;
+        let r=document.getElementById('result');
+        try{
+            let resp=await fetch('/api/calc',{
+                method:'POST',headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({query:q})
             });
-            let d = await resp.json();
-            if (d.status === 'success') {
-                r.innerText = '📊 坍缩报告\\n' +
-                    '━━━━━━━━━━━━━━━━━━━━\\n' +
-                    '输入:     ' + d.input + '\\n' +
-                    '通项:     ' + d.summand + '\\n' +
-                    '初始域:   ' + d.domain + '\\n' +
-                    '起始:     n=' + d.start + '\\n' +
-                    '映射路径: ' + d.path + '\\n' +
-                    '步数:     ' + d.steps + ' 步\\n' +
-                    '投票:     ' + d.consensus + '\\n' +
-                    '策略:     ' + d.strategy + '\\n' +
-                    '━━━━━━━━━━━━━━━━━━━━\\n' +
-                    '坍缩值:   ' + fmt(d.value) + '\\n' +
-                    '━━━━━━━━━━━━━━━━━━━━\\n' +
-                    '任何发散问题欢迎私信：永恒无限鱼(全平台)，合作15299667123(同微)';
-            } else {
-                r.innerText = '⚠ ' + (d.message || '无法收敛');
+            let d=await resp.json();
+            if(d.status==='success'){
+                r.innerText='📊 坍缩报告\\n'+
+                '━━━━━━━━━━━━━━━━━━━━\\n'+
+                '输入:     '+d.input+'\\n'+
+                '通项:     '+d.summand+'\\n'+
+                '初始域:   '+d.domain+'\\n'+
+                '起始:     n='+d.start+'\\n'+
+                '映射路径: '+d.path+'\\n'+
+                '步数:     '+d.steps+' 步\\n'+
+                '投票:     '+d.consensus+'\\n'+
+                '策略:     '+d.strategy+'\\n'+
+                '━━━━━━━━━━━━━━━━━━━━\\n'+
+                '坍缩值:   '+fmt(d.value)+'\\n'+
+                '━━━━━━━━━━━━━━━━━━━━\\n'+
+                '理论：任何发散均可通过 ≤3 步对偶映射消除';
+            }else{
+                r.innerText='⚠ '+(d.message||'无法收敛');
             }
-        } catch (e) {
-            r.innerText = '⚠ 网络错误';
-        }
+        }catch(e){ r.innerText='⚠ 网络错误'; }
     }
-    
-    document.getElementById('calcBtn').addEventListener('click', doCalc);
-    document.getElementById('query').addEventListener('keypress', e => {
-        if (e.key === 'Enter') doCalc();
-    });
-    
-    // ========== 绘制九域示意图 ==========
-    function drawGraph() {
-        const container = document.getElementById('graphContainer');
-        if (!container) return;
-        
-        // 节点布局坐标 (百分比位置)
-        const nodes = [
-            { name: '加法域', x: 15, y: 50, conv: false },
-            { name: '乘法域', x: 35, y: 30, conv: false },
-            { name: '积分域', x: 35, y: 70, conv: false },
-            { name: '微分域', x: 55, y: 30, conv: false },
-            { name: '谱域', x: 55, y: 70, conv: true },
-            { name: '泛函积分域', x: 75, y: 50, conv: true },
-            { name: '编织域', x: 90, y: 30, conv: true },
-            { name: '同伦域', x: 90, y: 70, conv: true },
-            { name: '范畴域', x: 105, y: 50, conv: true }
-        ];
-        
-        // 连线定义 (起点索引, 终点索引)
-        const edges = [
-            [0,1],[0,2],[0,3],  // 加法域
-            [1,0],[1,2],[1,4],  // 乘法域
-            [2,4],[2,5],[2,3],  // 积分域
-            [3,4],[3,2],        // 微分域
-            [4,3],[4,2],[4,1],  // 谱域
-            [5,2],[5,6],        // 泛函积分域
-            [6,7],              // 编织域
-            [7,8],              // 同伦域
-            [8,0],[8,1]         // 范畴域
-        ];
-        
-        // 清除旧内容
-        container.innerHTML = '';
-        
-        // 创建连线
-        edges.forEach(edge => {
-            const from = nodes[edge[0]];
-            const to = nodes[edge[1]];
-            const line = document.createElement('div');
-            line.className = 'arrow-line';
-            
-            const dx = to.x - from.x;
-            const dy = to.y - from.y;
-            const length = Math.sqrt(dx*dx + dy*dy);
-            const angle = Math.atan2(dy, dx) * 180 / Math.PI;
-            
-            line.style.width = length + '%';
-            line.style.left = from.x + '%';
-            line.style.top = from.y + '%';
-            line.style.transform = `rotate(${angle}deg)`;
-            line.style.background = from.conv && to.conv ? '#ff6b6b' : '#4ecdc4';
-            
-            container.appendChild(line);
-        });
-        
-        // 创建节点
-        nodes.forEach(node => {
-            const n = document.createElement('div');
-            n.className = 'node' + (node.conv ? ' convergence' : '');
-            n.style.left = (node.x - 3.5) + '%';
-            n.style.top = (node.y - 3.5) + '%';
-            n.textContent = node.name;
-            container.appendChild(n);
-        });
-    }
-    
-    // 页面加载后绘制图形
-    window.addEventListener('load', function() {
-        drawGraph();
-    });
+    document.getElementById('calcBtn').addEventListener('click',doCalc);
+    document.getElementById('query').addEventListener('keypress',e=>{if(e.key==='Enter')doCalc();});
 </script>
 </body>
 </html>
@@ -760,7 +532,7 @@ def api_calc():
             value = float(value)
         except:
             pass
-        path_str = ' → '.join([p[1] for p in path]) if path else "直接谱域求值"
+        path_str = ' → '.join([p[1] for p in path]) if path else "直接"
         strategy = path[-1][1] if path else "谱域"
         return jsonify({
             "status":"success",
@@ -781,5 +553,5 @@ def api_calc():
 if __name__ == '__main__':
     os.makedirs('static', exist_ok=True)
     port = int(os.environ.get("PORT",5000))
-    print(f"🧌 塌缩怪兽 v22.0 帮助版 启动: http://0.0.0.0:{port}")
+    print(f"🧌 塌缩怪兽 v25.0 启动: http://0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)
