@@ -1,6 +1,6 @@
 """
-塌缩怪兽 v17.0 — 存在数论终极实现
-编织域·同伦域·范畴域全激活 | 普适发散消除引擎 | e^{iS}=1
+塌缩怪兽 v18.0 — 修复版
+存在数论完全体 | 修复域分类和路径选择
 """
 
 import math, os, traceback, json, uuid
@@ -9,15 +9,12 @@ from collections import deque, defaultdict
 
 import sympy as sp
 from sympy import (oo, factorial, log, Symbol, Sum, simplify, Function,
-                   zeta, pi, exp, ln, I, limit, integrate, sqrt, gamma,
-                   polylog, hyper, hyperexpand)
+                   zeta, pi, exp, ln, sqrt)
 import mpmath as mp
 
 # ========== 全局符号 ==========
 n_sym = Symbol('n', integer=True, positive=True)
 x_sym = Symbol('x', real=True)
-z_sym = Symbol('z')
-s_sym = Symbol('s')
 
 SAFE_LOCALS = {
     "Sum": Sum, "oo": oo, "factorial": factorial,
@@ -29,11 +26,10 @@ SAFE_LOCALS = {
     "eulerphi": Function("eulerphi"),
     "divisor_sigma": Function("divisor_sigma"),
     "mangoldt": Function("mangoldt"),
-    "zeta": zeta, "pi": pi,
-    "primepi": Function("primepi")
+    "zeta": zeta, "pi": pi
 }
 
-# ========== 九域定义 ==========
+# ========== 九域 ==========
 DOMAINS = [
     "加法域", "乘法域", "积分域", "微分域",
     "谱域", "泛函积分域", "编织域", "同伦域", "范畴域"
@@ -52,7 +48,7 @@ DUAL_GRAPH = {
     "范畴域": {"恒等态射对应0": "加法域", "恒等态射对应1": "乘法域"}
 }
 
-# ========== 动态数状态机 ==========
+# ========== 动态数 ==========
 class DynamicNumber:
     def __init__(self, expr, domain, history=None):
         self.expr = expr
@@ -60,24 +56,25 @@ class DynamicNumber:
         self.history = history or []
 
     def evolve(self, new_expr, new_domain, mapping_name):
-        new_hist = self.history + [(mapping_name, new_domain)]
-        return DynamicNumber(new_expr, new_domain, new_hist)
+        return DynamicNumber(new_expr, new_domain,
+                             self.history + [(mapping_name, new_domain)])
 
-# ========== 对偶映射函子注册 ==========
+# ========== 函子注册 ==========
 FUNCTOR_REGISTRY = {}
 
 def register_transform(src, dst, name, func):
     FUNCTOR_REGISTRY[(src, dst)] = (name, func)
 
-# --- 具体变换实现 ---
-def exp_map(dn): return dn.evolve(exp(dn.expr), "乘法域", "指数映射")
-def log_map(dn): return dn.evolve(log(dn.expr), "加法域", "对数映射")
+def exp_map(dn):
+    return dn.evolve(exp(dn.expr), "乘法域", "指数映射")
+
+def log_map(dn):
+    return dn.evolve(log(dn.expr), "加法域", "对数映射")
 
 def mellin_transform(dn):
     a_n = dn.expr
     if a_n.is_Pow and a_n.args[0].is_Number and a_n.args[1] == n_sym:
-        r = a_n.args[0]
-        return dn.evolve(sp.Tuple(r, sp.Integer(0)), "谱域", "梅林变换")
+        return dn.evolve(sp.Tuple(a_n.args[0], sp.Integer(0)), "谱域", "梅林变换")
     if a_n == factorial(n_sym):
         return dn.evolve(sp.Symbol('BorelFactorial'), "谱域", "梅林变换")
     return dn.evolve(a_n, "谱域", "梅林变换")
@@ -109,7 +106,7 @@ def braid_homotopy(dn):
 def categorify(dn):
     return dn.evolve(dn.expr, "范畴域", "态射范畴化")
 
-# 注册核心映射
+# 注册
 register_transform("加法域", "乘法域", "指数映射", exp_map)
 register_transform("乘法域", "加法域", "对数映射", log_map)
 register_transform("乘法域", "谱域", "梅林变换", mellin_transform)
@@ -123,22 +120,19 @@ register_transform("泛函积分域", "编织域", "二维拓扑", topology_map)
 register_transform("编织域", "同伦域", "辫子同伦", braid_homotopy)
 register_transform("同伦域", "范畴域", "态射范畴化", categorify)
 
-# 剩余映射使用占位符
-def generic_shift(src, dst, name):
-    def shift(dn):
-        return dn.evolve(dn.expr, dst, name)
-    register_transform(src, dst, name, shift)
-
+# 其余占位
 for src, mappings in DUAL_GRAPH.items():
     for name, dst in mappings.items():
         if (src, dst) not in FUNCTOR_REGISTRY:
-            generic_shift(src, dst, name)
+            register_transform(src, dst, name,
+                               lambda dn, n=name, d=dst: dn.evolve(dn.expr, d, n))
 
-# ========== 自动寻路 ==========
+# ========== 寻路 ==========
 class PathFinder:
     def __init__(self):
         self.graph = DUAL_GRAPH
         self.convergence = CONVERGENCE_DOMAINS
+
     def find_all_paths(self, start_domain, max_steps=3):
         visited = {start_domain}
         queue = deque([(start_domain, [])])
@@ -155,7 +149,7 @@ class PathFinder:
                     queue.append((neighbor, path + [(mapping, neighbor)]))
         return sorted(results, key=len)
 
-# ========== 多策略求值器 ==========
+# ========== 求值器（修复核心） ==========
 class Evaluator:
     def evaluate(self, dn):
         if dn.domain == "谱域":
@@ -173,66 +167,85 @@ class Evaluator:
         return None
 
     def _eval_spectral(self, dn):
+        """谱域求值：直接对通项执行正则化"""
         expr = dn.expr
-        # 1. 参数结构
-        if isinstance(expr, sp.Tuple):
-            if len(expr) == 2 and expr[0].is_Number and expr[1] == 0:
-                r = float(expr[0])
-                return float(r / (1 - r)) if r != 1 else float('inf')
+
+        # 跳过Tuple和特殊标记（这些在映射过程中已被处理，直接退回原通项）
+        if isinstance(expr, sp.Tuple) or isinstance(expr, sp.Symbol):
             return None
-        # 2. 特殊标记
-        if isinstance(expr, sp.Symbol) and expr.name == 'BorelFactorial':
-            return self._borel_sum(factorial(n_sym))
-        # 3. 多项式 n^k → ζ(-k)
+
+        # === 1. 调和级数 1/n ===
+        if sp.simplify(expr - 1/n_sym) == 0:
+            return float('inf')
+
+        # === 2. 纯幂 n^k ===
         if self._is_pure_power(expr):
             k = self._get_exponent(expr)
             try:
                 return float(zeta(-k))
-            except: pass
-        # 4. 几何 r^n → Abel
+            except:
+                pass
+
+        # === 3. 几何级数 r^n ===
         base = self._get_geometric_base(expr)
-        if base is not None and base != 1:
-            return float(base / (1 - base))
-        # 5. 交错型
+        if base is not None:
+            if abs(base) < 1:
+                # 直接收敛
+                return float(base / (1 - base))
+            else:
+                # Abel求和：r/(1-r)，适用于所有 r≠1
+                if base != 1:
+                    return float(base / (1 - base))
+                else:
+                    return float('inf')
+
+        # === 4. 交错级数 ===
         alt = self._extract_alternating(expr)
         if alt is not None:
             core, parity = alt
-            k = self._get_exponent(core) if self._is_pure_power(core) else 0
-            try:
-                eta_val = float((1 - 2**(1+k)) * zeta(-k))
-                return eta_val if parity == 1 else -eta_val
-            except: pass
-        # 6. 对数
+            # 4a. 交错调和 (-1)^{n+1}/n
+            if sp.simplify(core - 1/n_sym) == 0:
+                return math.log(2) if parity == 1 else -math.log(2)
+            # 4b. 交错幂次
+            if self._is_pure_power(core):
+                k = self._get_exponent(core)
+                try:
+                    # Dirichlet eta: η(s) = (1-2^{1-s})ζ(s)
+                    eta_val = float((1 - 2**(1+k)) * zeta(-k))
+                    return eta_val if parity == 1 else -eta_val
+                except:
+                    pass
+
+        # === 5. 对数 ln n ===
         if expr == log(n_sym):
             return 0.5 * math.log(2 * math.pi)
-        # 7. 调和级数 → 不可正则化
-        if sp.simplify(expr - 1/n_sym) == 0:
-            return float('inf')
-        # 8. 数论函数预言值
+
+        # === 6. 数论函数 ===
         special = self._special_number_theoretic(expr)
         if special is not None:
             return special
-        # 9. 通用 Borel 求和
+
+        # === 7. 阶乘（Borel） ===
         if self._has_factorial(expr):
             val = self._borel_sum(expr)
-            if val is not None: return val
-        # 10. Euler 求和（交错级数）
-        if self._is_alternating(expr):
-            euler_val = self._euler_sum(expr)
-            if euler_val is not None: return euler_val
-        # 11. mpmath 终极尝试
+            if val is not None:
+                return val
+
+        # === 8. 通用mpmath尝试 ===
         try:
             f = sp.lambdify(n_sym, expr, 'mpmath')
-            return float(mp.nsum(f, [1, mp.inf]))
-        except: pass
+            # 对于交错级数，mpmath的nsum用Shanks变换通常能处理
+            return float(mp.nsum(f, [1, mp.inf], method='shanks'))
+        except:
+            pass
+
         return None
 
     def _eval_path_integral(self, dn):
         expr = dn.expr
         if self._has_factorial(expr):
             return self._borel_sum(expr)
-        # 泛函积分域内回退到谱域处理
-        return self._eval_spectral(DynamicNumber(expr, "谱域"))
+        return None
 
     def _eval_differential(self, dn):
         a_n = dn.expr
@@ -243,38 +256,34 @@ class Evaluator:
                 val = sp.limit(gen, x, 1, dir='-')
                 if val.is_finite:
                     return float(val)
-        except: pass
+        except:
+            pass
         return None
 
     def _eval_braided(self, dn):
-        """编织域：拓扑正则化（超阶乘/超指数增长）"""
         expr = dn.expr
         if expr == factorial(n_sym)**2:
-            return -0.023  # 存在数论预言值
+            return -0.023
         if expr.is_Pow and expr.args[0] == n_sym and expr.args[1] == n_sym:
             return self._borelf(expr)
-        return self._topological_limit(expr)
+        return None
 
     def _eval_homotopy(self, dn):
-        """同伦域：阿贝尔平均 + Euler 求和 + Dirichlet 正则化"""
         expr = dn.expr
-        # Abel 平均
         base = self._get_geometric_base(expr)
         if base is not None and abs(base) >= 1:
             try:
                 f = sp.lambdify(n_sym, expr, 'mpmath')
-                def abel(x): return mp.nsum(lambda k: f(k)*(x**k), [1, mp.inf])
+                def abel(x):
+                    return mp.nsum(lambda k: f(k) * (x**k), [1, mp.inf])
                 return float(mp.limit(abel, 1))
-            except: pass
-        # Euler 求和
+            except:
+                pass
         if self._is_alternating(expr):
-            euler_val = self._euler_sum(expr)
-            if euler_val is not None: return euler_val
-        # Dirichlet 正则化
+            return self._euler_sum(expr)
         return self._dirichlet_regularization(expr)
 
     def _eval_categorical(self, dn):
-        """范畴域：恒等态射坍缩为0或1"""
         expr = dn.expr
         if expr == 0 or expr == sp.Integer(0):
             return 0.0
@@ -282,63 +291,63 @@ class Evaluator:
             return 1.0
         return None
 
-    # ========== 高级正则化工具 ==========
+    # ========== 工具函数 ==========
     def _borelf(self, expr):
-        """超阶乘 Borel：n^n ≈ n! * e^n / sqrt(2πn) 的 Borel 和"""
         approx = factorial(n_sym) * exp(n_sym) / sqrt(2*pi*n_sym)
         return self._borel_sum(approx)
 
-    def _topological_limit(self, expr):
-        """拓扑极限：尝试多重对数表示"""
-        # 这里是占位，未来可接入真正的辫子多项式计算
-        return None
-
     def _dirichlet_regularization(self, expr):
-        """Dirichlet 级数解析延拓：求 D(0)"""
         try:
             s = sp.Symbol('s')
-            dirichlet = sp.summation(expr * n_sym**(-s), (n_sym, 1, oo))
-            if dirichlet.is_finite:
-                val = sp.limit(dirichlet, s, 0)
+            d = sp.summation(expr * n_sym**(-s), (n_sym, 1, oo))
+            if d.is_finite:
+                val = sp.limit(d, s, 0)
                 if val.is_finite:
                     return float(val)
-        except: pass
+        except:
+            pass
         return None
 
     def _euler_sum(self, expr, depth=10):
-        """Euler 交错级数加速求和"""
-        core_parity = self._extract_alternating(expr)
-        if core_parity is None: return None
-        core, parity = core_parity
+        alt = self._extract_alternating(expr)
+        if alt is None:
+            return None
+        core, parity = alt
         try:
-            a = [float(core.subs(n_sym, k)) for k in range(depth)]
+            a = [float(core.subs(n_sym, k)) for k in range(1, depth+1)]
             diffs = [a[0]]
             for _ in range(1, depth):
                 a = [a[i+1] - a[i] for i in range(len(a)-1)]
                 diffs.append(a[0])
             total = sum(d * (-1)**k / 2**(k+1) for k, d in enumerate(diffs))
             return total if parity == 1 else -total
-        except: return None
+        except:
+            return None
 
     def _borel_sum(self, a_n, max_terms=50):
         z = sp.Symbol('z')
         try:
-            terms = [a_n.subs(n_sym, k) / sp.factorial(k) * z**k for k in range(max_terms)]
+            terms = [a_n.subs(n_sym, k) / sp.factorial(k) * z**k
+                     for k in range(max_terms)]
             borel = sum(terms)
             f = sp.lambdify(z, borel, 'mpmath')
             integral = mp.quad(lambda t: mp.e**(-t) * f(t), [0, mp.inf])
             return float(integral)
-        except: return None
+        except:
+            return None
 
-    # ========== 辅助检测函数 ==========
     def _is_pure_power(self, expr):
-        if expr == n_sym: return True
-        if expr.is_Pow and expr.args[0] == n_sym: return expr.args[1].is_Number
+        if expr == n_sym:
+            return True
+        if expr.is_Pow and expr.args[0] == n_sym:
+            return expr.args[1].is_Number
         return False
 
     def _get_exponent(self, expr):
-        if expr == n_sym: return 1
-        if expr.is_Pow and expr.args[0] == n_sym: return float(expr.args[1])
+        if expr == n_sym:
+            return 1.0
+        if expr.is_Pow and expr.args[0] == n_sym:
+            return float(expr.args[1])
         return None
 
     def _get_geometric_base(self, expr):
@@ -346,12 +355,13 @@ class Evaluator:
             return float(expr.args[0])
         if expr.is_Mul:
             for arg in expr.args:
-                if arg.is_Pow and arg.args[1] == n_sym:
+                if arg.is_Pow and arg.args[1] == n_sym and arg.args[0].is_Number:
                     return float(arg.args[0])
         return None
 
     def _extract_alternating(self, expr):
-        if not expr.is_Mul: return None
+        if not expr.is_Mul:
+            return None
         sign_factor = None
         core_parts = []
         for arg in expr.args:
@@ -359,15 +369,19 @@ class Evaluator:
                 sign_factor = arg
             else:
                 core_parts.append(arg)
-        if sign_factor is None: return None
+        if sign_factor is None:
+            return None
         core = sp.Mul(*core_parts) if core_parts else 1
         exponent = sign_factor.args[1]
-        diff_p1 = sp.simplify(exponent - (n_sym+1))
-        if diff_p1 == 0: return (core, 1)
+        diff_p1 = sp.simplify(exponent - (n_sym + 1))
+        if diff_p1 == 0:
+            return (core, 1)
         diff_n = sp.simplify(exponent - n_sym)
-        if diff_n == 0: return (core, -1)
-        diff_m1 = sp.simplify(exponent - (n_sym-1))
-        if diff_m1 == 0: return (core, -1)
+        if diff_n == 0:
+            return (core, -1)
+        diff_m1 = sp.simplify(exponent - (n_sym - 1))
+        if diff_m1 == 0:
+            return (core, -1)
         return None
 
     def _is_alternating(self, expr):
@@ -376,81 +390,127 @@ class Evaluator:
     def _special_number_theoretic(self, expr):
         if isinstance(expr, Function):
             name = expr.func.__name__ if hasattr(expr.func, '__name__') else ''
-            if 'mobius' in name: return -2.0
-            if 'liouville' in name: return 0.0
-            if 'eulerphi' in name or 'totient' in name: return 0.0
-            if 'mangoldt' in name: return -0.569
-            if 'divisor_sigma' in name: return 1/144
+            if 'mobius' in name:
+                return -2.0
+            if 'liouville' in name:
+                return 0.0
+            if 'eulerphi' in name or 'totient' in name:
+                return 0.0
+            if 'mangoldt' in name:
+                return -0.569
+            if 'divisor_sigma' in name:
+                return 1/144
         return None
 
     def _has_factorial(self, expr):
         return expr.has(factorial)
 
-# ========== 坍缩协调器 ==========
+# ========== 坍缩协调器（优先直接谱域） ==========
 class Collapser:
     def __init__(self):
         self.pathfinder = PathFinder()
         self.evaluator = Evaluator()
 
     def collapse(self, initial_dn):
+        # 策略0：直接谱域（最高优先级，避免绕路破坏表达式）
+        direct = DynamicNumber(initial_dn.expr, "谱域", [("直接", "谱域")])
+        direct_val = self.evaluator.evaluate(direct)
+        if direct_val is not None and math.isfinite(direct_val):
+            return direct_val, [("直接", "谱域")], "1/1 路径一致（直接）"
+
+        # 策略1：通过积分域→谱域
+        current = initial_dn
+        functor1 = FUNCTOR_REGISTRY.get(("加法域", "积分域"))
+        functor2 = FUNCTOR_REGISTRY.get(("积分域", "谱域"))
+        if functor1 and functor2 and initial_dn.domain == "加法域":
+            try:
+                cur = functor1[1](current)
+                cur = functor2[1](cur)
+                val = self.evaluator.evaluate(cur)
+                if val is not None and math.isfinite(val):
+                    return val, [("黎曼和极限", "积分域"), ("拉普拉斯变换", "谱域")], "1/1 路径一致"
+            except:
+                pass
+
+        # 策略2：搜索所有路径
         paths = self.pathfinder.find_all_paths(initial_dn.domain, max_steps=3)
         results = defaultdict(list)
-        # 尝试所有映射路径
         for path in paths:
             current = initial_dn
             valid = True
             for mapping, target in path:
                 functor = FUNCTOR_REGISTRY.get((current.domain, target))
-                if functor is None: valid = False; break
+                if functor is None:
+                    valid = False
+                    break
                 current = functor[1](current)
-            if not valid: continue
+            if not valid:
+                continue
             val = self.evaluator.evaluate(current)
             if val is not None and math.isfinite(val):
                 key = round(val, 12)
                 results[key].append(path)
-        # 保底：直接谱域求值
-        direct = DynamicNumber(initial_dn.expr, "谱域", [("直接", "谱域")])
-        direct_val = self.evaluator.evaluate(direct)
-        if direct_val is not None and math.isfinite(direct_val):
-            key = round(direct_val, 12)
-            results[key].append([("直接", "谱域")])
-        if not results:
-            return None, None, "无解"
-        best_val = max(results.keys(), key=lambda k: len(results[k]))
-        best_path = results[best_val][0]
-        consensus = f"{len(results[best_val])}/{sum(len(v) for v in results.values())} 路径一致"
-        return best_val, best_path, consensus
 
-# ========== 输入解析 ==========
+        if results:
+            best_val = max(results.keys(), key=lambda k: len(results[k]))
+            best_path = results[best_val][0]
+            consensus = f"{len(results[best_val])}/{sum(len(v) for v in results.values())} 路径一致"
+            return best_val, best_path, consensus
+
+        return None, None, "无解"
+
+# ========== 输入解析（修复：强力域分类） ==========
 def parse_input(user_input):
     cleaned = user_input.replace('∑', 'Sum').replace('∞', 'oo').strip()
     try:
         expr = sp.sympify(cleaned, locals=SAFE_LOCALS)
     except Exception as e:
         raise ValueError(f"表达式解析失败: {e}")
+
     if not isinstance(expr, Sum):
         expr = Sum(expr, (n_sym, 1, oo))
+
     summand = expr.args[0]
     var_tuple = expr.args[1]
+
     if var_tuple[2] != oo:
         raise ValueError("目前仅支持无穷级数")
-    # 自动调整 n=0 起始到 n=1
+
+    # 处理n=0起始：直接调整求和下标
     if var_tuple[1] == 0:
         summand = summand.subs(var_tuple[0], var_tuple[0] - 1)
+        # 对于阶乘和几何，需要确认替换后是否还能识别
+        # 简单处理：把调整后的通项直接用于计算
         expr = Sum(summand, (var_tuple[0], 1, oo))
-    domain = classify_domain(summand)
+
+    domain = classify_domain_robust(summand)
     return DynamicNumber(summand, domain)
 
-def classify_domain(expr):
-    if expr.has(factorial): return "乘法域"
-    if expr.is_Pow and expr.args[0].is_Number and expr.args[1] == n_sym: return "乘法域"
-    if expr.is_Mul:
-        for arg in expr.args:
-            if arg.is_Pow and arg.args[0].is_Number and arg.args[1] == n_sym:
-                return "乘法域"
+
+def classify_domain_robust(expr):
+    """强力域分类：确保多项式归加法域，几何/阶乘归乘法域"""
+    # 乘法域：含阶乘 或 含明显幂底数为常数
+    if expr.has(factorial):
+        return "乘法域"
+
+    # 检查是否包含 r^n 形态（r是常数）
+    def has_geometric(e):
+        if e.is_Pow and e.args[0].is_Number and e.args[1] == n_sym:
+            return True
+        if e.is_Mul:
+            for arg in e.args:
+                if has_geometric(arg):
+                    return True
+        return False
+
+    if has_geometric(expr):
+        return "乘法域"
+
+    # 其余全部归加法域（多项式、调和、对数、交错等）
     return "加法域"
 
-# ========== Flask 应用 ==========
+
+# ========== Flask ==========
 from flask import Flask, request, jsonify, render_template_string
 
 app = Flask(__name__)
@@ -462,7 +522,7 @@ HTML_TEMPLATE = '''
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>塌缩怪兽 v17.0</title>
+<title>塌缩怪兽 v18.0</title>
 <style>
     body { background:#0f1117; color:#fff; font-family:Arial; padding:30px; }
     .container { max-width:900px; margin:auto; }
@@ -485,8 +545,8 @@ HTML_TEMPLATE = '''
 </head>
 <body>
 <div class="container">
-    <h1>🧌 塌缩怪兽 v17.0</h1>
-    <p class="subtitle">存在数论完全体 | 编织域·同伦域激活 | 普适发散消除</p>
+    <h1>🧌 塌缩怪兽 v18.0</h1>
+    <p class="subtitle">修复版 | 直接谱域优先 | e<sup>iS</sup>=1</p>
     <div class="examples">
         <span>Sum(n**2,(n,1,oo))</span>
         <span>Sum(n,(n,1,oo))</span>
@@ -506,7 +566,6 @@ HTML_TEMPLATE = '''
     <pre id="result"></pre>
 </div>
 <script>
-    // 示例按钮点击填充输入框
     document.querySelectorAll('.examples span').forEach(span => {
         span.addEventListener('click', function() {
             document.getElementById('query').value = this.textContent.trim();
@@ -515,20 +574,30 @@ HTML_TEMPLATE = '''
 
     function fmt(v) {
         if (v === null || v === undefined) return '未知';
+        if (v === Infinity || v === '∞') return '∞';
         if (typeof v === 'string') return v;
-        if (Math.abs(v) < 1e-10) return '0';
+        if (Math.abs(v) < 1e-12) return '0';
         let known = {
+            '-0.0833333333333333': '-1/12',
             '-0.08333333333333333': '-1/12',
+            '0.0833333333333333': '1/12',
+            '0.00833333333333333': '1/120',
+            '-0.00396825396825397': '-1/252',
             '0.25': '1/4',
             '0.5': '1/2',
+            '-0.5': '-1/2',
             '-0.125': '-1/8',
-            '0.5963473623231941': '≈0.596',
-            '0.9189385332046727': '½ln(2π)',
+            '0.596347362323194': '≈0.596',
+            '0.918938533204673': '½ln(2π)',
             '-2.0': '-2',
-            '0.6931471805599453': 'ln2'
+            '0.693147180559945': 'ln2'
         };
         let key = String(v);
         if (key in known) return known[key];
+        // 检查是否接近已知值
+        for (let k in known) {
+            if (Math.abs(v - parseFloat(k)) < 1e-10) return known[k];
+        }
         return v.toFixed(8);
     }
 
@@ -566,7 +635,6 @@ HTML_TEMPLATE = '''
     }
 
     document.getElementById('calcBtn').addEventListener('click', doCalc);
-    // 支持回车键计算
     document.getElementById('query').addEventListener('keypress', function(e) {
         if (e.key === 'Enter') doCalc();
     });
@@ -608,5 +676,5 @@ def api_calc():
 if __name__ == '__main__':
     os.makedirs('static', exist_ok=True)
     port = int(os.environ.get("PORT", 5000))
-    print(f"🧌 塌缩怪兽 v17.0 启动: http://0.0.0.0:{port}")
+    print(f"🧌 塌缩怪兽 v18.0 启动: http://0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)
