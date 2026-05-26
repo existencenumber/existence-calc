@@ -1,5 +1,5 @@
 """
-塌缩怪兽 v11.1 — 修复几何级数识别
+塌缩怪兽 v11.1 — 稳定修复版
 基于存在数论的非微扰计算工具
 """
 
@@ -87,7 +87,6 @@ def analyze_term(expr, var='n'):
     sym = Symbol(var)
     expr_s = sp.simplify(expr)
 
-    # 多项式 n^k
     if expr_s.is_polynomial(sym):
         deg = sp.degree(expr_s, gen=sym)
         if deg >= 0:
@@ -95,15 +94,12 @@ def analyze_term(expr, var='n'):
                     "mapping": ["加法域", "乘法域", "谱域"],
                     "method": "zeta", "param": -deg}
 
-    # 几何 r^n（三重检查，兼容不同 SymPy 版本）
-    # 方式1：表达式本身是否就是 r^n 形式
     if expr_s.is_Pow and expr_s.exp.has(sym):
         base = float(expr_s.base)
         return {"type": "geometric", "domain": "乘法域",
                 "mapping": ["乘法域", "谱域"],
                 "method": "abel", "param": base}
 
-    # 方式2：遍历原子，exp 精确等于 sym
     for atom in expr_s.atoms():
         if atom.is_Pow and atom.exp == sym:
             base = float(atom.base)
@@ -111,7 +107,6 @@ def analyze_term(expr, var='n'):
                     "mapping": ["乘法域", "谱域"],
                     "method": "abel", "param": base}
 
-    # 方式3：遍历原子，exp 包含 sym
     for atom in expr_s.atoms():
         if atom.is_Pow and atom.exp.has(sym):
             base = float(atom.base)
@@ -119,19 +114,16 @@ def analyze_term(expr, var='n'):
                     "mapping": ["乘法域", "谱域"],
                     "method": "abel", "param": base}
 
-    # 阶乘 n!
     if expr_s.has(sp.factorial):
         return {"type": "factorial", "domain": "乘法域",
                 "mapping": ["乘法域", "谱域"],
                 "method": "borel", "param": None}
 
-    # 调和 1/n
     if sp.simplify(expr_s - 1/sym) == 0:
         return {"type": "harmonic", "domain": "加法域",
                 "mapping": ["加法域", "谱域"],
                 "method": "zeta", "param": 1}
 
-    # 对数 ln n
     if expr_s == sp.log(sym):
         return {"type": "logarithmic", "domain": "加法域",
                 "mapping": ["加法域", "谱域"],
@@ -339,7 +331,7 @@ HTML_TEMPLATE = '''
                     '━━━━━━━━━━━━━━━━━━━━\\n' +
                     '坍缩值:   ' + fmt(d.value) + '\\n' +
                     '━━━━━━━━━━━━━━━━━━━━\\n' +
-                    '可视化正在开发，任何无法解决的发散问题，私信：永恒无限鱼(全平台)。合作联系15299667123;
+                    '发散是表象，守恒是本质。e^{iS} = 1';
             } else {
                 r.innerText = '⚠ ' + (d.message || '未知错误');
             }
