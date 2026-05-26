@@ -1,5 +1,5 @@
 """
-塌缩怪兽 v11.0 — 融合进化版
+塌缩怪兽 v11.1 — 修复几何级数识别
 基于存在数论的非微扰计算工具
 """
 
@@ -7,7 +7,6 @@ import re, math, os, json, traceback, uuid
 from datetime import datetime
 from collections import deque
 
-# ── 安全白名单 ──
 import sympy as sp
 from sympy import Sum, oo, factorial, log, Symbol, simplify
 
@@ -27,9 +26,6 @@ except ImportError:
 
 from flask import Flask, request, jsonify, render_template_string
 
-# ═══════════════════════════════════════════
-# 九域对偶图
-# ═══════════════════════════════════════════
 DUAL_GRAPH = {
     "加法域": {"指数映射": "乘法域", "黎曼和极限": "积分域", "差商极限": "微分域"},
     "乘法域": {"对数映射": "加法域", "对数导数": "积分域", "梅林变换": "谱域"},
@@ -52,9 +48,6 @@ DOMAIN_COLORS = {
     "积分域": "#96ceb4", "微分域": "#45b7d1", "泛函积分域": "#dda0dd",
 }
 
-# ═══════════════════════════════════════════
-# 谱域计算函数
-# ═══════════════════════════════════════════
 def compute_zeta(s):
     table = {0:-0.5, -1:-1/12, -2:0, -3:1/120, -4:0, -5:-1/252,
              1:float('inf'), 2:math.pi**2/6, 3:1.2020569031595942}
@@ -90,9 +83,6 @@ def compute_zeta_deriv(s):
     if s == 0: return 0.5*math.log(2*math.pi)
     return None
 
-# ═══════════════════════════════════════════
-# 分析通项（融合版：清晰字典结构 + 全部发散类型）
-# ═══════════════════════════════════════════
 def analyze_term(expr, var='n'):
     sym = Symbol(var)
     expr_s = sp.simplify(expr)
@@ -100,13 +90,30 @@ def analyze_term(expr, var='n'):
     # 多项式 n^k
     if expr_s.is_polynomial(sym):
         deg = sp.degree(expr_s, gen=sym)
-        return {"type": "polynomial", "domain": "加法域",
-                "mapping": ["加法域", "乘法域", "谱域"],
-                "method": "zeta", "param": -deg}
+        if deg >= 0:
+            return {"type": "polynomial", "domain": "加法域",
+                    "mapping": ["加法域", "乘法域", "谱域"],
+                    "method": "zeta", "param": -deg}
 
-    # 几何 r^n
+    # 几何 r^n（三重检查，兼容不同 SymPy 版本）
+    # 方式1：表达式本身是否就是 r^n 形式
+    if expr_s.is_Pow and expr_s.exp.has(sym):
+        base = float(expr_s.base)
+        return {"type": "geometric", "domain": "乘法域",
+                "mapping": ["乘法域", "谱域"],
+                "method": "abel", "param": base}
+
+    # 方式2：遍历原子，exp 精确等于 sym
     for atom in expr_s.atoms():
         if atom.is_Pow and atom.exp == sym:
+            base = float(atom.base)
+            return {"type": "geometric", "domain": "乘法域",
+                    "mapping": ["乘法域", "谱域"],
+                    "method": "abel", "param": base}
+
+    # 方式3：遍历原子，exp 包含 sym
+    for atom in expr_s.atoms():
+        if atom.is_Pow and atom.exp.has(sym):
             base = float(atom.base)
             return {"type": "geometric", "domain": "乘法域",
                     "mapping": ["乘法域", "谱域"],
@@ -130,7 +137,6 @@ def analyze_term(expr, var='n'):
                 "mapping": ["加法域", "谱域"],
                 "method": "zeta_deriv", "param": 0}
 
-    # ── 特殊函数：函数名匹配 ──
     fn = str(expr_s.func) if hasattr(expr_s, 'func') else ''
     if 'mobius' in fn.lower():
         return {"type": "mobius", "domain": "加法域",
@@ -151,9 +157,6 @@ def analyze_term(expr, var='n'):
     return {"type": "unknown", "domain": "未知",
             "mapping": ["未知"], "method": None, "param": None}
 
-# ═══════════════════════════════════════════
-# 谱域计算器
-# ═══════════════════════════════════════════
 def compute_spectral(method, param):
     methods = {
         'zeta': compute_zeta, 'abel': compute_abel, 'euler': compute_euler,
@@ -170,58 +173,39 @@ def compute_spectral(method, param):
         return methods[method](param) if param is not None else methods[method]()
     return None
 
-# ═══════════════════════════════════════════
-# 主计算函数（融合版：清晰结构 + 完整错误输出）
-# ═══════════════════════════════════════════
 def compute(user_input):
     try:
         cleaned = user_input.replace('∑', 'Sum').replace('∞', 'oo').strip()
         n = Symbol('n')
         expr = sp.sympify(cleaned, locals=SAFE_LOCALS)
-
         if not isinstance(expr, Sum):
             expr = Sum(expr, (n, 1, oo))
-
         summand = expr.args[0]
         var_tuple = expr.args[1]
         upper = var_tuple[2]
-
         if upper != oo:
-            return {"status": "finite", "message": "有限级数可直接求和",
-                    "summand": str(summand)}
-
+            return {"status": "finite", "message": "有限级数可直接求和", "summand": str(summand)}
         analysis = analyze_term(summand)
         value = compute_spectral(analysis["method"], analysis["param"])
-
         return {
-            "status": "success",
-            "timestamp": datetime.utcnow().isoformat(),
-            "input": user_input,
-            "summand": str(summand),
-            "divergence_type": analysis["type"],
-            "domain": analysis["domain"],
+            "status": "success", "timestamp": datetime.utcnow().isoformat(),
+            "input": user_input, "summand": str(summand),
+            "divergence_type": analysis["type"], "domain": analysis["domain"],
             "mapping_path": " → ".join(analysis["mapping"]),
             "steps": len(analysis["mapping"]) - 1,
-            "method": analysis["method"],
-            "value": value
+            "method": analysis["method"], "value": value
         }
-
     except Exception as e:
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
-# ═══════════════════════════════════════════
-# 可视化（融合版：简洁三域视图）
-# ═══════════════════════════════════════════
 def visualize_mapping(path):
     if not HAS_MPL: return None
     filename = f"graph_{uuid.uuid4().hex}.png"
     save_path = os.path.join("static", filename)
     os.makedirs("static", exist_ok=True)
-
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.set_xlim(-1, 4); ax.set_ylim(-1, 3); ax.axis("off")
-
     for domain in path:
         if domain in DOMAIN_POSITIONS:
             x, y = DOMAIN_POSITIONS[domain]
@@ -229,38 +213,25 @@ def visualize_mapping(path):
                            ec="black", linewidth=2, zorder=2)
             ax.add_patch(c)
             ax.text(x, y, domain, ha="center", va="center", fontsize=9, weight="bold")
-
     for i in range(len(path)-1):
         d1, d2 = path[i], path[i+1]
         if d1 in DOMAIN_POSITIONS and d2 in DOMAIN_POSITIONS:
-            x1, y1 = DOMAIN_POSITIONS[d1]
-            x2, y2 = DOMAIN_POSITIONS[d2]
+            x1, y1 = DOMAIN_POSITIONS[d1]; x2, y2 = DOMAIN_POSITIONS[d2]
             ax.annotate('', xy=(x2, y2), xytext=(x1, y1),
                         arrowprops=dict(arrowstyle='->', color='red', lw=2.5, zorder=3))
-
     plt.title(" → ".join(path), fontsize=12)
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     return f"/static/{filename}"
 
-# ═══════════════════════════════════════════
-# 自我进化反馈日志
-# ═══════════════════════════════════════════
 FEEDBACK_LOG = "feedback.log"
 
 def log_unresolved(user_input, error_msg):
-    entry = {
-        "timestamp": datetime.utcnow().isoformat(),
-        "input": user_input,
-        "error": error_msg
-    }
+    entry = {"timestamp": datetime.utcnow().isoformat(), "input": user_input, "error": error_msg}
     with open(FEEDBACK_LOG, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-# ═══════════════════════════════════════════
-# Flask 应用
-# ═══════════════════════════════════════════
 app = Flask(__name__)
 
 HTML_TEMPLATE = '''
@@ -269,7 +240,7 @@ HTML_TEMPLATE = '''
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>塌缩怪兽 v11.0</title>
+<title>塌缩怪兽 v11.1</title>
 <style>
     body { background:#0f1117; color:#fff; font-family:Arial; padding:30px; }
     .container { max-width:900px; margin:auto; }
@@ -296,9 +267,8 @@ HTML_TEMPLATE = '''
 </head>
 <body>
 <div class="container">
-    <h1>🧌 塌缩怪兽 v11.0</h1>
+    <h1>🧌 塌缩怪兽 v11.1</h1>
     <p class="subtitle">存在数论非微扰计算器 | 九域对偶映射 | e<sup>iS</sup> = 1</p>
-
     <div class="examples">
         <span onclick="set('Sum(n**2,(n,1,oo))')">∑ n²</span>
         <span onclick="set('Sum(n,(n,1,oo))')">∑ n</span>
@@ -309,22 +279,17 @@ HTML_TEMPLATE = '''
         <span onclick="set('Sum(liouville(n),(n,1,oo))')">∑ λ(n)</span>
         <span onclick="set('Sum(eulerphi(n),(n,1,oo))')">∑ φ(n)</span>
     </div>
-
     <input id="query" value="Sum(n**2,(n,1,oo))" placeholder="输入发散级数">
-
     <div class="btn-group">
         <button class="btn-calc" onclick="doCalc()">坍缩!</button>
         <button class="btn-viz" onclick="doViz()">可视化</button>
     </div>
-
     <div class="loading" id="loading">⏳ 塌缩怪兽正在九域中搜索对偶映射...</div>
     <pre id="result"></pre>
     <img id="graph" src="" alt="九域映射图">
 </div>
-
 <script>
     function set(text) { document.getElementById('query').value = text; }
-
     function fmt(v) {
         if (v === null || v === undefined) return '未知';
         if (v === Infinity || v === '∞') return '∞';
@@ -347,7 +312,6 @@ HTML_TEMPLATE = '''
         if (Math.abs(v-phi) < 1e-10) return 'φ';
         return v.toFixed(6);
     }
-
     async function doCalc() {
         var q = document.getElementById('query').value;
         var r = document.getElementById('result');
@@ -384,7 +348,6 @@ HTML_TEMPLATE = '''
             r.innerText = '⚠ 网络错误: ' + e.message;
         }
     }
-
     async function doViz() {
         var q = document.getElementById('query').value;
         var g = document.getElementById('graph');
@@ -436,11 +399,8 @@ def api_viz():
             return jsonify({'graph_url': graph_url})
     return jsonify({'graph_url': None})
 
-# ═══════════════════════════════════════════
-# 启动
-# ═══════════════════════════════════════════
 if __name__ == "__main__":
     os.makedirs('static', exist_ok=True)
     port = int(os.environ.get("PORT", 5000))
-    print(f"🧌 塌缩怪兽 v11.0 已启动: http://0.0.0.0:{port}")
+    print(f"🧌 塌缩怪兽 v11.1 已启动: http://0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)
