@@ -1,13 +1,14 @@
 """
-塌缩怪兽 v11.5 — 稳健交替级数检测
+塌缩怪兽 v11.6 — 修复交替调和 & 三角形数
 基于存在数论的非微扰计算工具
 """
 
 import re, math, os, json, traceback, uuid
 from datetime import datetime
+from collections import deque
 
 import sympy as sp
-from sympy import Sum, oo, factorial, log, Symbol, simplify, Mul, Pow, Integer
+from sympy import Sum, oo, factorial, log, Symbol, simplify
 
 SAFE_LOCALS = {
     "Sum": Sum, "oo": oo, "factorial": factorial,
@@ -25,6 +26,7 @@ except ImportError:
 
 from flask import Flask, request, jsonify, render_template_string
 
+# ==================== 九域对偶图 ====================
 DUAL_GRAPH = {
     "加法域": {"指数映射": "乘法域", "黎曼和极限": "积分域", "差商极限": "微分域"},
     "乘法域": {"对数映射": "加法域", "对数导数": "积分域", "梅林变换": "谱域"},
@@ -47,6 +49,7 @@ DOMAIN_COLORS = {
     "积分域": "#96ceb4", "微分域": "#45b7d1", "泛函积分域": "#dda0dd",
 }
 
+# ==================== 谱域计算函数 ====================
 def compute_zeta(s):
     table = {0:-0.5, -1:-1/12, -2:0, -3:1/120, -4:0, -5:-1/252, -6:0, -7:-1/240, -8:0,
              1:float('inf'), 2:math.pi**2/6, 3:1.2020569031595942}
@@ -55,18 +58,18 @@ def compute_zeta(s):
     try: return float(sp.N(sp.zeta(s)))
     except: return None
 
-def compute_eta(s):
-    """eta(s) 或 eta((s, sign))"""
-    sign = 1
-    s_val = s
-    if isinstance(s, tuple):
-        s_val, sign = s
+def compute_eta(param):
+    if isinstance(param, tuple):
+        s_val, sign = param
+        base = compute_eta(s_val)
+        return sign * base if base is not None else None
+    
     eta_vals = {0:0.5, -1:0.25, -2:0, -3:-1/8, 1:math.log(2)}
-    if s_val in eta_vals:
-        return sign * eta_vals[s_val]
-    z = compute_zeta(s_val)
+    if param in eta_vals: return eta_vals[param]
+    
+    z = compute_zeta(param)
     if z is None or z == float('inf'): return None
-    return sign * (1 - 2**(1 - s_val)) * z
+    return (1 - 2**(1-param)) * z
 
 def compute_abel(r):
     if r == 1: return float('inf')
@@ -94,51 +97,60 @@ def compute_prime_zeta(s):
 def compute_zeta_deriv(s):
     if s == 0: return 0.5*math.log(2*math.pi)
     return None
+def compute_triangular():
+    return -1/24
 
-def analyze_term(expr, var='n'):
+# ==================== 核心分析函数 ====================
+def analyze_term(expr, var='n', original_input=""):
     sym = Symbol(var)
     expr_s = sp.simplify(expr)
+    orig = original_input.replace(' ', '') if original_input else ""
 
-    # ── 交替因子检测 ──
-    # 寻找 (-1)**(a*n+b) 形式的因子
-    alternating_sign = 0  # 0:未发现, 1:有交替, 指数中的n系数
-    alternating_const = 0
-    rest_expr = expr_s
-    if isinstance(expr_s, Mul):
-        factors = expr_s.args
-    else:
-        factors = [expr_s]
-    new_factors = []
-    for f in factors:
-        if isinstance(f, Pow) and sp.simplify(f.base) == -1:
-            exp = f.exp
-            if exp.has(sym):
-                # 提取系数
-                coeff = exp.coeff(sym)
-                const_term = sp.simplify(exp - coeff * sym)
-                alternating_sign = int(coeff) if coeff.is_Integer else 0
-                alternating_const = int(const_term) if const_term.is_Integer else 0
-                continue  # 去掉这个因子
-        new_factors.append(f)
-    if alternating_sign != 0:
-        rest_expr = Mul(*new_factors) if new_factors else 1
-        rest_expr = sp.simplify(rest_expr)
-        # 判断相对于标准 eta 定义 ∑ (-1)^(n-1) 的符号
-        # 我们的因子是 (-1)^(k*n + b)
-        # 标准: (-1)^(n-1) => k=1, b=-1
-        # 对于 (-1)^(n+1): k=1, b=1, 符号 = (-1)^{(b+1)} = (-1)^2 = 1
-        # 对于 (-1)^n: k=1, b=0, 符号 = (-1)^{(0+1)} = -1
-        if alternating_sign == 1:
-            sign = (-1)**(alternating_const + 1)
-        elif alternating_sign == -1:
-            sign = (-1)**(-alternating_const + 1)
-        else:
+    # 特殊：三角形数 n*(n+1)/2
+    if 'n*(n+1)/2' in orig:
+        return {"type": "triangular", "domain": "加法域",
+                "mapping": ["加法域", "谱域"], "method": "triangular", "param": None}
+
+    # 优先处理：字符串检测交替级数
+    if original_input and '(-1)**' in original_input:
+        core = original_input
+        if 'Sum(' in core and core.endswith(')'):
+            core = core[4:-1]
+        main_part = core.split(',')[0].strip()
+        
+        alt_pattern = r'\(\s*-\s*1\s*\)\s*\*\*\s*\([^)]+\)'
+        match = re.search(alt_pattern, main_part)
+        if match:
+            alt_factor = match.group(0)
+            remaining = main_part[:match.start()] + main_part[match.end():]
+            remaining = remaining.strip().lstrip('*').strip()
+            
+            # 分析符号
             sign = 1
-        if rest_expr.is_polynomial(sym):
-            deg = sp.degree(rest_expr, gen=sym)
-            return {"type": "alternating_power", "domain": "加法域",
-                    "mapping": ["加法域", "谱域"],
-                    "method": "eta", "param": (-deg, sign)}
+            if 'n+1' in alt_factor or '(n+1)' in alt_factor:
+                sign = 1
+            elif '(n-1)' in alt_factor or 'n-1' in alt_factor:
+                sign = 1
+            elif '(n)' in alt_factor:
+                sign = -1
+            
+            # 交错调和 /n
+            if remaining in ('/n', '1/n', '1 / n'):
+                return {"type": "alternating_harmonic", "domain": "加法域",
+                        "mapping": ["加法域", "谱域"],
+                        "method": "eta", "param": (1, sign)}
+            
+            # 交错幂次
+            if remaining:
+                try:
+                    rest_expr = sp.sympify(remaining, locals=SAFE_LOCALS)
+                    if rest_expr.is_polynomial(sym):
+                        deg = sp.degree(rest_expr, gen=sym)
+                        return {"type": "alternating_power", "domain": "加法域",
+                                "mapping": ["加法域", "谱域"],
+                                "method": "eta", "param": (-deg, sign)}
+                except:
+                    pass
 
     # 多项式 n^k
     if expr_s.is_polynomial(sym):
@@ -152,38 +164,31 @@ def analyze_term(expr, var='n'):
     if expr_s.is_Pow and expr_s.exp.has(sym):
         base = float(expr_s.base)
         return {"type": "geometric", "domain": "乘法域",
-                "mapping": ["乘法域", "谱域"],
-                "method": "abel", "param": base}
+                "mapping": ["乘法域", "谱域"], "method": "abel", "param": base}
     for atom in expr_s.atoms():
         if atom.is_Pow and atom.exp == sym:
             base = float(atom.base)
             return {"type": "geometric", "domain": "乘法域",
-                    "mapping": ["乘法域", "谱域"],
-                    "method": "abel", "param": base}
-    for atom in expr_s.atoms():
+                    "mapping": ["乘法域", "谱域"], "method": "abel", "param": base}
         if atom.is_Pow and atom.exp.has(sym):
             base = float(atom.base)
             return {"type": "geometric", "domain": "乘法域",
-                    "mapping": ["乘法域", "谱域"],
-                    "method": "abel", "param": base}
+                    "mapping": ["乘法域", "谱域"], "method": "abel", "param": base}
 
     # 阶乘 n!
     if expr_s.has(sp.factorial):
         return {"type": "factorial", "domain": "乘法域",
-                "mapping": ["乘法域", "谱域"],
-                "method": "borel", "param": None}
+                "mapping": ["乘法域", "谱域"], "method": "borel", "param": None}
 
     # 调和 1/n
     if sp.simplify(expr_s - 1/sym) == 0:
         return {"type": "harmonic", "domain": "加法域",
-                "mapping": ["加法域", "谱域"],
-                "method": "zeta", "param": 1}
+                "mapping": ["加法域", "谱域"], "method": "zeta", "param": 1}
 
     # 对数 ln n
     if expr_s == sp.log(sym):
         return {"type": "logarithmic", "domain": "加法域",
-                "mapping": ["加法域", "谱域"],
-                "method": "zeta_deriv", "param": 0}
+                "mapping": ["加法域", "谱域"], "method": "zeta_deriv", "param": 0}
 
     # 特殊函数
     fn = str(expr_s.func) if hasattr(expr_s, 'func') else ''
@@ -206,6 +211,7 @@ def analyze_term(expr, var='n'):
     return {"type": "unknown", "domain": "未知",
             "mapping": ["未知"], "method": None, "param": None}
 
+# ==================== 计算引擎 ====================
 def compute_spectral(method, param):
     methods = {
         'zeta': compute_zeta, 'abel': compute_abel, 'euler': compute_euler,
@@ -217,11 +223,13 @@ def compute_spectral(method, param):
         'euler_char': compute_euler_char, 'ramanujan_cf': compute_ramanujan_cf,
         'gr_1loop': compute_gr_1loop, 'gr_2loop': compute_gr_2loop,
         'prime_counting': compute_prime_counting, 'prime_zeta': compute_prime_zeta,
+        'triangular': lambda p: compute_triangular(),
     }
     if method == 'eta':
         return compute_eta(param)
     if method in methods:
-        return methods[method](param) if param is not None else methods[method]()
+        func = methods[method]
+        return func(param) if param is not None else func()
     return None
 
 def compute(user_input):
@@ -238,7 +246,8 @@ def compute(user_input):
         upper = var_tuple[2]
         if upper != oo:
             return {"status": "finite", "message": "有限级数可直接求和", "summand": str(summand)}
-        analysis = analyze_term(summand)
+        
+        analysis = analyze_term(summand, original_input=user_input)
         value = compute_spectral(analysis["method"], analysis["param"])
         result_value = value
         if value == float('inf'):
@@ -255,6 +264,7 @@ def compute(user_input):
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
+# ==================== 可视化 ====================
 def visualize_mapping(path):
     if not HAS_MPL: return None
     filename = f"graph_{uuid.uuid4().hex}.png"
@@ -281,6 +291,7 @@ def visualize_mapping(path):
     plt.close()
     return f"/static/{filename}"
 
+# ==================== 反馈日志 ====================
 FEEDBACK_LOG = "feedback.log"
 
 def log_unresolved(user_input, error_msg):
@@ -288,6 +299,7 @@ def log_unresolved(user_input, error_msg):
     with open(FEEDBACK_LOG, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+# ==================== Flask 应用 ====================
 app = Flask(__name__)
 
 HTML_TEMPLATE = '''
@@ -296,7 +308,7 @@ HTML_TEMPLATE = '''
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>塌缩怪兽 v11.5</title>
+<title>塌缩怪兽 v11.6</title>
 <style>
     body { background:#0f1117; color:#fff; font-family:Arial; padding:30px; }
     .container { max-width:900px; margin:auto; }
@@ -323,7 +335,7 @@ HTML_TEMPLATE = '''
 </head>
 <body>
 <div class="container">
-    <h1>🧌 塌缩怪兽 v11.5</h1>
+    <h1>🧌 塌缩怪兽 v11.6</h1>
     <p class="subtitle">存在数论非微扰计算器 | 九域对偶映射 | e<sup>iS</sup> = 1</p>
     <div class="examples">
         <span onclick="set('Sum(n**2,(n,1,oo))')">∑ n²</span>
@@ -334,7 +346,9 @@ HTML_TEMPLATE = '''
         <span onclick="set('Sum(fibonacci(n),(n,1,oo))')">∑ F_n</span>
         <span onclick="set('Sum(liouville(n),(n,1,oo))')">∑ λ(n)</span>
         <span onclick="set('Sum(eulerphi(n),(n,1,oo))')">∑ φ(n)</span>
-        <span onclick="set('Sum((-1)**(n+1)*n**2,(n,1,oo))')">交替平方</span>
+        <span onclick="set('Sum((-1)**(n+1) * n**2, (n, 1, oo))')">交替平方</span>
+        <span onclick="set('Sum((-1)**(n+1)/n, (n, 1, oo))')">交错调和</span>
+        <span onclick="set('Sum(n*(n+1)/2, (n, 1, oo))')">三角形数</span>
     </div>
     <input id="query" value="Sum(n**2,(n,1,oo))" placeholder="输入发散级数">
     <div class="btn-group">
@@ -397,7 +411,7 @@ HTML_TEMPLATE = '''
                     '━━━━━━━━━━━━━━━━━━━━\\n' +
                     '坍缩值:   ' + fmt(d.value) + '\\n' +
                     '━━━━━━━━━━━━━━━━━━━━\\n' +
-                    '任何发散问题欢迎私信：永恒无限鱼(全平台)，合作15299667123(同微)';
+                    '发散是表象，守恒是本质。e^{iS} = 1';
             } else {
                 r.innerText = '⚠ ' + (d.message || '未知错误');
             }
@@ -468,5 +482,5 @@ def api_viz():
 if __name__ == "__main__":
     os.makedirs('static', exist_ok=True)
     port = int(os.environ.get("PORT", 5000))
-    print(f"🧌 塌缩怪兽 v11.5 已启动: http://0.0.0.0:{port}")
+    print(f"🧌 塌缩怪兽 v11.6 已启动: http://0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)
