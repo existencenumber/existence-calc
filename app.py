@@ -1,5 +1,5 @@
 """
-塌缩怪兽 v11.3 — 增强错误处理，确保 API 始终返回 JSON
+塌缩怪兽 v11.4 — 支持交替幂次级数，扩展 eta 函数
 基于存在数论的非微扰计算工具
 """
 
@@ -49,12 +49,27 @@ DOMAIN_COLORS = {
 }
 
 def compute_zeta(s):
-    table = {0:-0.5, -1:-1/12, -2:0, -3:1/120, -4:0, -5:-1/252,
+    table = {0:-0.5, -1:-1/12, -2:0, -3:1/120, -4:0, -5:-1/252, -6:0, -7:-1/240, -8:0,
              1:float('inf'), 2:math.pi**2/6, 3:1.2020569031595942}
     if s in table: return table[s]
     if s < 0 and s % 2 == 0: return 0
     try: return float(sp.N(sp.zeta(s)))
     except: return None
+
+def compute_eta(s):
+    """支持元组 (s, sign) 或单值 s"""
+    if isinstance(s, tuple):
+        s_val, sign = s
+        base = compute_eta(s_val)
+        return sign * base if base is not None else None
+    # 单值 s
+    eta_vals = {0:0.5, -1:0.25, -2:0, -3:-1/8, 1:math.log(2)}
+    if s in eta_vals:
+        return eta_vals[s]
+    # 使用关系 η(s) = (1 - 2^(1-s)) ζ(s)
+    z = compute_zeta(s)
+    if z is None or z == float('inf'): return None
+    return (1 - 2**(1-s)) * z
 
 def compute_abel(r):
     if r == 1: return float('inf')
@@ -87,6 +102,40 @@ def analyze_term(expr, var='n'):
     sym = Symbol(var)
     expr_s = sp.simplify(expr)
 
+    # ── 交替级数：检查 (-1)^(a*n+b) 因子 ──
+    for atom in expr_s.atoms():
+        if atom.is_Pow and atom.base == -1 and atom.exp.has(sym):
+            exp_val = atom.exp
+            # 检查指数是否为 n + 常数 或 n 本身
+            is_alternating = False
+            sign = 1  # 相对于标准 eta 定义 ∑ (-1)^(n-1) 的符号
+            if sp.simplify(exp_val - (sym + 1)) == 0 or sp.simplify(exp_val - (sym - 1)) == 0:
+                is_alternating = True
+                sign = 1
+            elif sp.simplify(exp_val - sym) == 0:
+                is_alternating = True
+                sign = -1
+            else:
+                # 尝试一般线性形式
+                coeff = exp_val.coeff(sym)
+                const = sp.simplify(exp_val - coeff * sym)
+                if coeff in [1, -1]:
+                    is_alternating = True
+                    if coeff == 1:
+                        # (-1)^(n + b) => 符号调整：相对于 (-1)^(n-1) 需要乘以 (-1)^(b+1)
+                        sign = (-1)**(int(const) + 1)
+                    else:  # coeff == -1
+                        sign = (-1)**(-int(const) + 1)
+            if is_alternating:
+                rest_expr = sp.simplify(expr_s / atom)
+                if rest_expr.is_polynomial(sym):
+                    deg = sp.degree(rest_expr, gen=sym)
+                    return {"type": "alternating_power", "domain": "加法域",
+                            "mapping": ["加法域", "谱域"],
+                            "method": "eta", "param": (-deg, sign)}
+            break  # 只处理第一个交替因子
+
+    # 多项式 n^k
     if expr_s.is_polynomial(sym):
         deg = sp.degree(expr_s, gen=sym)
         if deg >= 0:
@@ -94,19 +143,18 @@ def analyze_term(expr, var='n'):
                     "mapping": ["加法域", "乘法域", "谱域"],
                     "method": "zeta", "param": -deg}
 
+    # 几何 r^n
     if expr_s.is_Pow and expr_s.exp.has(sym):
         base = float(expr_s.base)
         return {"type": "geometric", "domain": "乘法域",
                 "mapping": ["乘法域", "谱域"],
                 "method": "abel", "param": base}
-
     for atom in expr_s.atoms():
         if atom.is_Pow and atom.exp == sym:
             base = float(atom.base)
             return {"type": "geometric", "domain": "乘法域",
                     "mapping": ["乘法域", "谱域"],
                     "method": "abel", "param": base}
-
     for atom in expr_s.atoms():
         if atom.is_Pow and atom.exp.has(sym):
             base = float(atom.base)
@@ -114,21 +162,25 @@ def analyze_term(expr, var='n'):
                     "mapping": ["乘法域", "谱域"],
                     "method": "abel", "param": base}
 
+    # 阶乘 n!
     if expr_s.has(sp.factorial):
         return {"type": "factorial", "domain": "乘法域",
                 "mapping": ["乘法域", "谱域"],
                 "method": "borel", "param": None}
 
+    # 调和 1/n
     if sp.simplify(expr_s - 1/sym) == 0:
         return {"type": "harmonic", "domain": "加法域",
                 "mapping": ["加法域", "谱域"],
                 "method": "zeta", "param": 1}
 
+    # 对数 ln n
     if expr_s == sp.log(sym):
         return {"type": "logarithmic", "domain": "加法域",
                 "mapping": ["加法域", "谱域"],
                 "method": "zeta_deriv", "param": 0}
 
+    # 特殊函数
     fn = str(expr_s.func) if hasattr(expr_s, 'func') else ''
     if 'mobius' in fn.lower():
         return {"type": "mobius", "domain": "加法域",
@@ -161,6 +213,8 @@ def compute_spectral(method, param):
         'gr_1loop': compute_gr_1loop, 'gr_2loop': compute_gr_2loop,
         'prime_counting': compute_prime_counting, 'prime_zeta': compute_prime_zeta,
     }
+    if method == 'eta':
+        return compute_eta(param)  # 直接调用，支持 tuple 或单值
     if method in methods:
         return methods[method](param) if param is not None else methods[method]()
     return None
@@ -237,7 +291,7 @@ HTML_TEMPLATE = '''
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>塌缩怪兽 v11.3</title>
+<title>塌缩怪兽 v11.4</title>
 <style>
     body { background:#0f1117; color:#fff; font-family:Arial; padding:30px; }
     .container { max-width:900px; margin:auto; }
@@ -264,7 +318,7 @@ HTML_TEMPLATE = '''
 </head>
 <body>
 <div class="container">
-    <h1>🧌 塌缩怪兽 v11.3</h1>
+    <h1>🧌 塌缩怪兽 v11.4</h1>
     <p class="subtitle">存在数论非微扰计算器 | 九域对偶映射 | e<sup>iS</sup> = 1</p>
     <div class="examples">
         <span onclick="set('Sum(n**2,(n,1,oo))')">∑ n²</span>
@@ -275,6 +329,7 @@ HTML_TEMPLATE = '''
         <span onclick="set('Sum(fibonacci(n),(n,1,oo))')">∑ F_n</span>
         <span onclick="set('Sum(liouville(n),(n,1,oo))')">∑ λ(n)</span>
         <span onclick="set('Sum(eulerphi(n),(n,1,oo))')">∑ φ(n)</span>
+        <span onclick="set('Sum((-1)**(n+1) * n**2, (n, 1, oo))')">交替平方</span>
     </div>
     <input id="query" value="Sum(n**2,(n,1,oo))" placeholder="输入发散级数">
     <div class="btn-group">
@@ -408,5 +463,5 @@ def api_viz():
 if __name__ == "__main__":
     os.makedirs('static', exist_ok=True)
     port = int(os.environ.get("PORT", 5000))
-    print(f"🧌 塌缩怪兽 v11.3 已启动: http://0.0.0.0:{port}")
+    print(f"🧌 塌缩怪兽 v11.4 已启动: http://0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)
