@@ -4,15 +4,23 @@ jobs:
   paper:
     runs-on: ubuntu-latest
     name: Paper Draft
+    env:
+      # [核心修复] 强制启用 Node.js 24 环境
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # [关键] 升级到支持 Node.js 24 的 v5 版本
+        uses: actions/checkout@v5
+
       - name: Build draft PDF
+        # 尝试使用最新的 master 分支，如果失败可换方案二
         uses: openjournals/openjournals-draft-action@master
         with:
           journal: joss
           paper-path: paper.md
+
       - name: Upload
+        # [关键] 升级到 v4，兼容 Node.js 24
         uses: actions/upload-artifact@v4
         with:
           name: paper
