@@ -1,16 +1,20 @@
-# 🧌 存在数论塌缩怪兽 v9.0
+# 塌缩怪兽 v25.0 (Collapse Monster)
+## 基于存在数论的普适发散正则化引擎
 
-基于**存在数论（Existence Number Theory）** 的非微扰计算工具。输入任意发散级数，自动识别发散类型，通过九域对偶映射在谱域中计算有限坍缩值。
+本工具基于存在数论 (Existence Number Theory) 的九域对偶映射框架，能够自动将发散级数映射到收敛域，并计算出其有限坍缩值。支持多项式、几何、交错、阶乘、超指数（深度至4）、对数、数论函数等发散类型。
 
-## 核心原理
+## 理论核心
 
-**发散是表象，守恒是本质。** 任何发散级数在原始域中发散，但在对偶域中存在有限坍缩值。九域对偶映射直径 ≤ 3，任何发散动数至多3步内可获有限值。
+任何发散问题均可通过 ≤3 步对偶映射消除。发散不是级数的固有属性，而是“选错了观察域”。
 
-## 快速启动
+## 快速开始
 
+### 在线使用
+访问 [https://existence-calc.onrender.com](https://existence-calc.onrender.com)
+
+### 本地运行
 ```bash
-# 安装依赖
+git clone https://github.com/existencenumber/existence-calc.git
+cd existence-calc
 pip install -r requirements.txt
-
-# 启动服务
 python app.py
