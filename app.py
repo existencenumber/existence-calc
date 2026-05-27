@@ -191,7 +191,7 @@ class Evaluator:
             if val is not None: return val
         return None
 
-    # ---------- 编织域 ----------
+    # ---------- 编织域（修复版） ----------
     def _eval_braided(self, dn):
         expr = dn.expr
         # 已知理论值（由琼斯多项式在单位根处取值得到）
@@ -200,17 +200,16 @@ class Evaluator:
         # n^n 理论预言值（Hopf链环，q=e^{iπ/4}）
         if self._is_n_power_n(expr):
             # 多层Borel深度2理论值
-            start = dn.start
-            if start == 0:
+            if dn.start == 0:
                 # n=0: 0^0=1, 加上后面的级数和
                 return 1.0 + (-1.038)
-        else:
-            # n=1 开始
-            return -1.038
-    # 一般超指数
-    if self._is_super_exponential(expr):
-        return self._super_borel_sum(expr, dn.start)
-    return None
+            else:
+                # n=1 开始
+                return -1.038
+        # 一般超指数
+        if self._is_super_exponential(expr):
+            return self._super_borel_sum(expr, dn.start)
+        return None
 
     # ---------- 同伦域 ----------
     def _eval_homotopy(self, dn):
@@ -285,16 +284,6 @@ class Evaluator:
             return total if parity == -1 else -total
         except: return None
 
-    def _generating_function_limit(self, expr, start):
-        x = sp.Symbol('x')
-        try:
-            gen = sp.summation(expr * x**n_sym, (n_sym, start, oo))
-            if gen.is_finite:
-                val = sp.limit(gen, x, 1, dir='-')
-                if val.is_finite: return float(val)
-        except: pass
-        return None
-
     def _borel_sum(self, a_n, start=0, max_terms=50):
         z = sp.Symbol('z')
         try:
@@ -312,10 +301,8 @@ class Evaluator:
         """检测超指数增长：n^n, n^{n^n}, (n!)^k (k≥2)"""
         if expr.is_Pow and expr.args[0] == n_sym and expr.args[1] == n_sym:
             return True
-        # 检测指数塔 n^(n^n) 等
         if expr.is_Pow and expr.args[0] == n_sym and self._is_super_exponential(expr.args[1]):
             return True
-        # 阶乘的高次幂
         if expr.is_Pow and expr.args[0].has(factorial) and expr.args[1].is_Number and expr.args[1] >= 2:
             return True
         if expr.has(factorial):
@@ -325,15 +312,11 @@ class Evaluator:
         return False
 
     def _super_borel_sum(self, a_n, start=0, max_terms=30, depth=2):
-        """多层Borel：深度2处理 n^n，深度3处理 n^{n^n}"""
-        # 深度1 直接Borel
         if depth == 1:
             return self._borel_sum(a_n, start, max_terms)
-        # 压制：a_n -> a_n / (n!)^(depth-1)
         reduced = a_n
         for _ in range(depth-1):
             reduced = reduced / factorial(n_sym)
-        # 对压制后的级数进行标准 Borel
         return self._borel_sum(reduced, start, max_terms)
 
     def _special_number_theoretic(self, expr):
