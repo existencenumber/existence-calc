@@ -4,12 +4,10 @@ on: [push]
 jobs:
   paper:
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     name: Paper Draft
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Build draft PDF using Docker
         uses: docker://openjournals/paperdraft:latest
@@ -19,7 +17,7 @@ jobs:
           JOURNAL: joss
 
       - name: Upload compiled PDF
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: paper
           path: paper.pdf
