@@ -9,7 +9,7 @@ jobs:
     name: Paper Draft
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build draft PDF using Docker
         uses: docker://openjournals/paperdraft:latest
